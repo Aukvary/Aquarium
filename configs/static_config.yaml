@@ -1,0 +1,45 @@
+# yaml
+components_manager:
+    task_processors:                  # Task processor is an executor for coroutine tasks.
+        main-task-processor:          # Make a task processor for CPU-bound coroutine tasks.
+            worker_threads: 4         # Process tasks in 4 threads.
+
+        fs-task-processor:            # Make a separate task processor for filesystem bound tasks.
+            worker_threads: 1
+
+    default_task_processor: main-task-processor  # Task processor in which components start.
+
+    components:  # Configuring components that were registered via component_list.
+
+        logging:  # Configuring the logging component.
+            fs-task-processor: fs-task-processor
+            loggers:
+                default:
+                    file_path: '@stderr'
+                    level: debug
+                    overflow_behavior: discard
+
+        congestion-control:
+
+        testsuite-support:
+
+        server:  # Configuring the HTTP server.
+            listener:
+                port: 8082
+                task_processor: main-task-processor
+
+        handler-hello:  # HTTP handler by URL '/hello'.
+            path: /hello
+            method: GET
+            task_processor: main-task-processor
+
+        grpc-server-middlewares-pipeline:
+
+        grpc-server:  # The single listening port for incoming RPCs.
+            port: $grpc_server_port
+            port#fallback: 8091
+            completion-queue-count: 2
+
+        greeter-service:
+            task-processor: main-task-processor
+            greeting-prefix: Hello
