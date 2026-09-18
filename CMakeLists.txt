@@ -8,14 +8,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(USERVER_USE_STATIC_LIBS OFF CACHE BOOL "" FORCE)
 
-# Избегаем патчинга libpq: на этой системе версии client/server libpq различаются
 set(USERVER_FEATURE_PATCH_LIBPQ OFF CACHE BOOL "" FORCE)
 
-# Системные protobuf/grpc (7.x) слишком новые для userver v3.2 -> качаем свои
 set(USERVER_FORCE_DOWNLOAD_PROTOBUF ON CACHE BOOL "" FORCE)
 set(USERVER_FORCE_DOWNLOAD_GRPC ON CACHE BOOL "" FORCE)
 
-# Включаем нужные модули
 set(USERVER_FEATURE_GRPC ON CACHE BOOL "" FORCE)
 set(USERVER_FEATURE_POSTGRESQL ON CACHE BOOL "" FORCE)
 set(USERVER_FEATURE_MONGODB OFF CACHE BOOL "" FORCE)
@@ -23,8 +20,6 @@ set(USERVER_FEATURE_CLICKHOUSE OFF CACHE BOOL "" FORCE)
 set(USERVER_FEATURE_RABBITMQ OFF CACHE BOOL "" FORCE)
 set(USERVER_FEATURE_KAFKA OFF CACHE BOOL "" FORCE)
 set(USERVER_FEATURE_MYSQL OFF CACHE BOOL "" FORCE)
-
-# gRPC не используем в сервисе, но reflection пригодится для grpcurl
 set(USERVER_FEATURE_GRPC_REFLECTION ON CACHE BOOL "" FORCE)
 
 set(USERVER_FEATURE_STACKTRACE OFF CACHE BOOL "" FORCE)
@@ -39,7 +34,6 @@ FetchContent_MakeAvailable(userver)
 
 userver_setup_environment()
 
-# Генерация gRPC-кода из proto/greeter.proto -> таргет aquarium-proto
 userver_add_grpc_library(
     ${PROJECT_NAME}-proto
     PROTOS greeter.proto

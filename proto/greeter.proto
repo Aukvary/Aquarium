@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package aquarium.api;
+package Aquarium.api;
 
 service GreeterService {
   rpc SayHello(GreetingRequest) returns(GreetingResponse) {}
