@@ -8,10 +8,7 @@
 
 int main(int argc, char* argv[]) {
     const auto component_list =
-        components::MinimalServerComponentList()
-            .Append<components::TestsuiteSupport>()
-            .Append<clients::dns::Component>()
-            .Append<congestion_control::Component>()
-            .AppendComponentList(ugrpc::server::MinimalComponentList());
+        components::MinimalServerComponentList().Append<>();
+
     return utils::DaemonMain(argc, argv, component_list);
 }

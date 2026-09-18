@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package aquarium.api;
+
+service Aquarium {
+  rpc Health(HealthCheckRequest) returns (HealthCheckResponse) {}
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+
+  ServingStatus status = 1;
+  bool db_initialized = 2;
+  bool utilities_initialized = 3;
+}
