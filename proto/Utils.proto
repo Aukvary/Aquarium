@@ -2,13 +2,9 @@ syntax = "proto3";
 
 package aquarium.api;
 
-service Aquarium {
-  rpc Health(HealthCheckRequest) returns (HealthCheckResponse) {}
-}
+message HealthRequest {}
 
-message HealthCheckRequest {}
-
-message HealthCheckResponse {
+message HealthResponse {
   enum ServingStatus {
     UNKNOWN = 0;
     SERVING = 1;
@@ -18,4 +14,8 @@ message HealthCheckResponse {
   ServingStatus status = 1;
   bool db_initialized = 2;
   bool utilities_initialized = 3;
+}
+
+service UtilsService {
+  rpc Health(HealthRequest) returns (HealthResponse);
 }
