@@ -1,14 +1,17 @@
 #pragma once
 
-#pragma once
-
 #include <string_view>
 #include <userver/components/component_base.hpp>
 #include <userver/components/component_fwd.hpp>
 #include <userver/ugrpc/client/fwd.hpp>
 #include <userver/ugrpc/client/simple_client_component.hpp>
 #include <userver/ugrpc/impl/static_service_metadata.hpp>
-#include <userver/utest/using_namespace_userver.hpp>
+#include <userver/ugrpc/server/call_context.hpp>
+#include <userver/ugrpc/server/service_component_base.hpp>
+#include <UtilsService.grpc.pb.h>
+#include <UtilsService.pb.h>
+#include <UtilsService_client.usrv.pb.hpp>
+#include <UtilsService_service.usrv.pb.hpp>
 
 namespace Aquarium::Handlers {
 
@@ -16,37 +19,41 @@ inline const userver::dynamic_config::Key<userver::ugrpc::client::ClientQos>
     kHealthQos{
         "health-client-qos",
         userver::dynamic_config::DefaultAsJsonString{
-            R"({"methods": {"__default__": {"timeout-ms": 1000, "attempts": 1}}})"
+            R"({"methods": {"__default__": {"timeout-ms": 1000, "attempts":
+            1}}})"
         }
     };
 
 class UtilsClient final {
 private:
-    using Client = aquarium::api::;
-    using Request = aquarium::api::HealthRequest;
-    static userver::ugrpc::client::CallOptions MakeCallOptions();
+    using Client = aquarium::api::UtilsServiceClient;
+    using Response = aquarium::api::HealthResponse;
     Client& _client;
+
+    static userver::ugrpc::client::CallOptions MakeCallOptions();
 
 public:
     explicit UtilsClient(Client& client);
 
     [[nodiscard]]
-    Request CheckHealth() const;
+    Response CheckHealth() const;
 };
 
-class HealthClientComponent final
-    : public userver::ugrpc::client::SimpleClientComponent<UtilsClient> {
+class UtilsClientComponent final
+    : public userver::ugrpc::client::SimpleClientComponent<
+          aquarium::api::UtilsServiceClient> {
 private:
-    using Client = aquarium::api::UtilsClient;
+    using Client = aquarium::api::UtilsServiceClient;
     using Request = aquarium::api::HealthRequest;
-    using Base = userver::ugrpc::client::SimpleClientComponent<UtilsClient>;
+    using Base = userver::ugrpc::client::SimpleClientComponent<
+        aquarium::api::UtilsServiceClient>;
 
     UtilsClient _clientWrapper;
 
 public:
     static constexpr std::string_view kName = "health-client";
 
-    HealthClientComponent(
+    UtilsClientComponent(
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     )
@@ -59,30 +66,29 @@ public:
     }
 };
 
-class HealthService final
-    : public userver::ugrpc::client::SimpleClientComponent<
-          aquarium::api::UtilsClient> {
+class UtilsService final : public aquarium::api::UtilsServiceBase {
 private:
+    using HealthRequest = aquarium::api::HealthRequest;
+    using HealthResponse = aquarium::api::HealthResponse;
+    using CallContext = userver::ugrpc::server::CallContext;
     const std::string _prefix;
 
 public:
-    explicit HealthService(std::string prefix);
+    explicit UtilsService(std::string prefix);
 
-    grpc::health::v1::HealthCheckResponse Health(
-        CallContext& context, aquarium::api::HealthCheckRequest&& request
-    ) override;
+    HealthResult Health(CallContext& context, HealthRequest&& request) override;
 };
 
-class HealthServiceComponent final
+class UtilsServiceComponent final
     : public userver::ugrpc::server::ServiceComponentBase {
 private:
     static constexpr std::string_view health_prefix = "health-prefix";
-    HealthService _service;
+    UtilsService _service;
 
 public:
     static constexpr std::string_view kName = "health-service";
 
-    HealthServiceComponent(
+    UtilsServiceComponent(
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     );

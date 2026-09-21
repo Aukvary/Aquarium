@@ -1,22 +1,21 @@
-#include "./Handlers.hpp"
 #include "userver/ugrpc/client/call_options.hpp"
+#include "Utils.hpp"
 
-#include <aquarium.pb.h>
-#include <aquarium_client.usrv.pb.hpp>
+#include <chrono>
 #include <utility>
+#include <UtilsService.pb.h>
 
 namespace Aquarium::Handlers {
-userver::ugrpc::client::CallOptions HealthClient::MakeCallOptions() {
+userver::ugrpc::client::CallOptions UtilsClient::MakeCallOptions() {
     userver::ugrpc::client::CallOptions call_options;
     call_options.SetTimeout(std::chrono::seconds{5});
     return call_options;
 }
 
-HealthClient::HealthClient(aquarium::api::AquariumClient& client)
-    : _client{client} {}
+UtilsClient::UtilsClient(Client& client) : _client{client} {}
 
-aquarium::api::HealthCheckResponse HealthClient::CheckHealth() const {
-    aquarium::api::HealthCheckRequest request;
+UtilsClient::Response UtilsClient::CheckHealth() const {
+    ::aquarium::api::HealthRequest request;
 
     auto call_options = MakeCallOptions();
 

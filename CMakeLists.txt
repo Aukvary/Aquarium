@@ -30,23 +30,23 @@ FetchContent_MakeAvailable(userver)
 
 userver_setup_environment()
 
-userver_add_grpc_library(${PROJECT_NAME}-proto PROTOS UserStore.proto Utils.proto)
+userver_add_grpc_library(${PROJECT_NAME}-proto PROTOS UserStoreService.proto UtilsService.proto)
 
-# add_library(
-#     ${PROJECT_NAME}_objs
-#     # src/Utils/HealthClient.cpp
-#     # src/Utils/HealthService.cpp
-# )
-#
-# target_include_directories(${PROJECT_NAME}_objs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-# target_link_libraries(
-#     ${PROJECT_NAME}_objs
-#     PUBLIC
-#         ${PROJECT_NAME}-proto
-#         userver::core
-#         userver::grpc
-# )
-#
+add_library(
+    ${PROJECT_NAME}_objs
+    src/Utils/HealthClient.cpp
+    src/Utils/HealthService.cpp
+)
+
+target_include_directories(${PROJECT_NAME}_objs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(
+    ${PROJECT_NAME}_objs
+    PUBLIC
+        ${PROJECT_NAME}-proto
+        userver::core
+        userver::grpc
+)
+
 add_executable(
     ${PROJECT_NAME}
     src/main.cpp
@@ -56,7 +56,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_link_libraries(
     ${PROJECT_NAME}
     PRIVATE
-        # ${PROJECT_NAME}_objs
+        ${PROJECT_NAME}_objs
         ${PROJECT_NAME}-proto
         userver::core
         userver::grpc

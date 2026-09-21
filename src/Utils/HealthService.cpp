@@ -1,29 +1,30 @@
-#include "./Handlers.hpp"
 #include "userver/components/component_config.hpp"
 #include "userver/ugrpc/server/service_component_base.hpp"
+#include "Utils.hpp"
 
-#include <aquarium.pb.h>
 #include <string>
 #include <userver/yaml_config/merge_schemas.hpp>
 #include <utility>
+#include <UtilsService.pb.h>
+#include <UtilsService_service.usrv.pb.hpp>
 
 namespace Aquarium::Handlers {
 
-HealthService::HealthService(std::string prefix) : _prefix(std::move(prefix)) {}
+UtilsService ::UtilsService(std::string prefix) : _prefix(std::move(prefix)) {}
 
-aquarium::api::AquariumBase::HealthResult HealthService::Health(
-    CallContext& /*context*/, aquarium::api::HealthCheckRequest&& /*request*/
+UtilsService::HealthResult UtilsService::Health(
+    CallContext& /*context*/, aquarium::api::HealthRequest&& /*request*/
 ) {
-    aquarium::api::HealthCheckResponse responce;
+    aquarium::api::HealthResponse responce;
 
-    responce.set_status(aquarium::api::HealthCheckResponse::SERVING);
+    responce.set_status(aquarium::api::HealthResponse::SERVING);
     responce.set_db_initialized(false);
     responce.set_utilities_initialized(false);
 
     return responce;
 }
 
-HealthServiceComponent::HealthServiceComponent(
+UtilsServiceComponent::UtilsServiceComponent(
     const userver::components::ComponentConfig& cfg,
     const userver::components::ComponentContext& ctx
 )
@@ -32,7 +33,7 @@ HealthServiceComponent::HealthServiceComponent(
     RegisterService(_service);
 }
 
-userver::yaml_config::Schema HealthServiceComponent::GetStaticConfigSchema() {
+userver::yaml_config::Schema UtilsServiceComponent::GetStaticConfigSchema() {
     return userver::yaml_config::MergeSchemas<
         userver::ugrpc::server::ServiceComponentBase>(R"(
 type: object

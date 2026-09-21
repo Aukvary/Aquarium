@@ -1,4 +1,4 @@
-// #include "Utils.hpp"
+#include "./Utils.hpp"
 #include "userver/ugrpc/client/client_factory_component.hpp"
 
 #include <userver/clients/dns/component.hpp>
@@ -16,6 +16,8 @@ int main(int argc, char* argv[]) {
             .Append<components::TestsuiteSupport>()
             .Append<ugrpc::client::ClientFactoryComponent>()
             .AppendComponentList(ugrpc::client::MinimalComponentList())
-            .AppendComponentList(ugrpc::server::MinimalComponentList());
+            .AppendComponentList(ugrpc::server::MinimalComponentList())
+            .Append<Aquarium::Handlers::UtilsClientComponent>()
+            .Append<Aquarium::Handlers::UtilsServiceComponent>();
     return utils::DaemonMain(argc, argv, component_list);
 }
