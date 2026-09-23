@@ -28,12 +28,12 @@ class UtilsClient final {
 private:
     using Client = aquarium::api::UtilsServiceClient;
     using Response = aquarium::api::HealthResponse;
-    Client& _client;
+    const Client& _client;
 
     static userver::ugrpc::client::CallOptions MakeCallOptions();
 
 public:
-    explicit UtilsClient(Client& client);
+    explicit UtilsClient(const Client& client);
 
     [[nodiscard]]
     Response CheckHealth() const;

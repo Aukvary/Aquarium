@@ -12,7 +12,7 @@ userver::ugrpc::client::CallOptions UtilsClient::MakeCallOptions() {
     return call_options;
 }
 
-UtilsClient::UtilsClient(Client& client) : _client{client} {}
+UtilsClient::UtilsClient(const Client& client) : _client{client} {}
 
 UtilsClient::Response UtilsClient::CheckHealth() const {
     ::aquarium::api::HealthRequest request;
