@@ -1,3 +1,4 @@
+#include "./Users.hpp"
 #include "./Utils.hpp"
 #include "userver/ugrpc/client/client_factory_component.hpp"
 

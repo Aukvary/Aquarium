@@ -41,3 +41,16 @@ components_manager:
 
     health-client:
       endpoint: "127.0.0.1:8081"
+      user-store-service:
+
+      task-processor: main-task-processor
+
+    postgres-db:
+      dbconnection: $pg_connection
+
+      blocking_task_processor: fs-task-processor
+      dns_resolver: async
+      sync-start: true
+
+    dns-client:
+      fs-task-processor: fs-task-processor
