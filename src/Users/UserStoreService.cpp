@@ -1,4 +1,5 @@
 #include "./Users.hpp"
+#include "userver/cache/update_type.hpp"
 #include "userver/storages/postgres/cluster_types.hpp"
 
 #include <boost/uuid/uuid.hpp>
@@ -26,9 +27,10 @@ UserStoreService::UserStoreService(
     const userver::components::ComponentContext& ctx
 )
     : UserStoreService::Component{cfg, ctx},
+      _inviteKey(cfg["invite_key"].As<std::string>()),
+      _authCache(ctx.FindComponent<AuthCache>()),
       _pgCluster(ctx.FindComponent<userver::components::Postgres>("postgres-db")
-                     .GetCluster()),
-      _inviteKey(cfg["invite_key"].As<std::string>()) {}
+                     .GetCluster()) {}
 
 UserStoreService::GetAllResult UserStoreService::GetAll(
     CallContext& /*ctx*/,
@@ -133,6 +135,8 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
     user->set_id(id);
     user->set_name(std::move(name));
     user->set_key(std::move(key));
+
+    _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     return response;
 }

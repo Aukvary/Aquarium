@@ -31,6 +31,33 @@
 #include <vector>
 
 namespace Aquarium::Users {
+
+struct UserDbInfo {
+    std::int64_t id;
+    std::string key;
+    std::string name;
+    std::vector<std::string> scopes;
+};
+
+struct AuthCachePolicy {
+    static constexpr std::string_view kName = "auth-pg-cache";
+
+    using ValueType = UserDbInfo;
+    using UpdatedFieldType = userver::storages::postgres::TimePointTz;
+    using CacheContainer = std::unordered_map<
+        std::string,
+        UserDbInfo,
+        std::hash<std::string>,
+        userver::crypto::algorithm::StringsEqualConstTimeComparator>;
+
+    static constexpr auto kKeyMember = &UserDbInfo::key;
+    static constexpr const char* kQuery =
+        "SELECT id, key, scopes, name FROM user_schema.tokens";
+    static constexpr const char* kUpdatedField = "update";
+};
+
+using AuthCache = userver::components::PostgreCache<AuthCachePolicy>;
+
 class UserStoreService final
     : public aquarium::api::UserStoreServiceBase::Component {
 
@@ -42,8 +69,9 @@ class UserStoreService final
     using DeleteUserRequest = aquarium::api::DeleteUserRequest;
 
 private:
-    userver::storages::postgres::ClusterPtr _pgCluster;
     std::string _inviteKey;
+    AuthCache& _authCache;
+    userver::storages::postgres::ClusterPtr _pgCluster;
 
 public:
     static constexpr std::string_view kName = "user-store-service";
@@ -102,32 +130,6 @@ public:
 
     using Base::GetClient;
 };
-
-struct UserDbInfo {
-    std::int64_t id;
-    std::string key;
-    std::vector<std::string> scopes;
-    std::string name;
-};
-
-struct AuthCachePolicy {
-    static constexpr std::string_view kName = "auth-pg-cache";
-
-    using ValueType = UserDbInfo;
-    using UpdatedFieldType = userver::storages::postgres::TimePointTz;
-    using CacheContainer = std::unordered_map<
-        std::string,
-        UserDbInfo,
-        std::hash<std::string>,
-        userver::crypto::algorithm::StringsEqualConstTimeComparator>;
-
-    static constexpr auto kKeyMember = &UserDbInfo::key;
-    static constexpr const char* kQuery =
-        "SELECT id, key, scopes, name FROM users.user_schema.tokens";
-    static constexpr const char* kUpdatedField = "update";
-};
-
-using AuthCache = userver::components::PostgreCache<AuthCachePolicy>;
 
 class AuthServiceMiddleware final
     : public userver::ugrpc::server::MiddlewareBase {
