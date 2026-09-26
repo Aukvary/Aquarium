@@ -12,7 +12,7 @@ message HealthResponse {
   }
 
   ServingStatus status = 1;
-  bool db_initialized = 2;
+  string db_initialized = 2;
   bool utilities_initialized = 3;
 }
 

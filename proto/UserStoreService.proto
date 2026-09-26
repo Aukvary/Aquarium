@@ -15,7 +15,7 @@ message GetAllUsersResponse {
 }
 
 message GetUserRequest {
-  uint64 id = 1;
+  int64 id = 1;
 }
 
 message GetUserResponse {
@@ -32,7 +32,8 @@ message AddUserResponse {
 }
 
 message UpdateUserRequest {
-  string name = 1;
+  string key = 1;
+  string newName = 2;
 }
 
 message UpdateUserResponse {
@@ -40,14 +41,14 @@ message UpdateUserResponse {
 }
 
 message DeleteUserRequest {
-  uint64 id = 1;
+  int64 id = 1;
 }
 
 message DeleteUserResponse {
   bool success = 1;
 }
 
-service UserStore {
+service UserStoreService {
   rpc GetAll(GetAllUsersRequest) returns (GetAllUsersResponse);
   rpc GetUser(GetUserRequest) returns (GetUserResponse);
   rpc AddUser(AddUserRequest) returns (AddUserResponse);

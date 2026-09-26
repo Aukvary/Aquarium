@@ -39,15 +39,15 @@ components_manager:
       health-prefix: "aquarium"
       task-processor: main-task-processor
 
-    health-client:
+    user-store-client:
       endpoint: "127.0.0.1:8081"
-      user-store-service:
 
+    user-store-service:
       task-processor: main-task-processor
+      invite_key: "secret_invite_key_value"
 
     postgres-db:
       dbconnection: $pg_connection
-
       blocking_task_processor: fs-task-processor
       dns_resolver: async
       sync-start: true

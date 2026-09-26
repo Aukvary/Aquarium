@@ -34,8 +34,8 @@ userver_add_grpc_library(${PROJECT_NAME}-proto PROTOS UserStoreService.proto Uti
 
 add_library(
     ${PROJECT_NAME}_objs
-    src/Utils/HealthClient.cpp
     src/Utils/HealthService.cpp
+    src/Users/UserStoreService.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_objs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -45,6 +45,7 @@ target_link_libraries(
         ${PROJECT_NAME}-proto
         userver::core
         userver::grpc
+        userver::postgresql
 )
 
 add_executable(
