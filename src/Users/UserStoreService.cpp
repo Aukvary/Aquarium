@@ -5,6 +5,7 @@
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <cstdint>
+#include <grpcpp/grpcpp.h>
 #include <grpcpp/support/config.h>
 #include <grpcpp/support/status.h>
 #include <string>
@@ -30,8 +31,8 @@ UserStoreService::UserStoreService(
       _inviteKey(cfg["invite_key"].As<std::string>()) {}
 
 UserStoreService::GetAllResult UserStoreService::GetAll(
-    CallContext& ctx,
-    GetAllUsersRequest&& request
+    CallContext& /*ctx*/,
+    GetAllUsersRequest&& /*request*/
 ) {
     static const userver::storages::postgres::Query kQuery{
         "SELECT id, name, key FROM users"
@@ -68,31 +69,45 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
     CallContext& ctx,
     GetUserRequest&& request
 ) {
-    static const userver::storages::postgres::Query kQuery{
-        "SELECT id, name, key FROM users WHERE id = $1",
-    };
+    try {
+        static const userver::storages::postgres::Query kQuery{
+            "SELECT id, name, key FROM users WHERE id = $1",
+        };
 
-    auto result = _pgCluster->Execute(
-        userver::storages::postgres::ClusterHostType::kSlave, kQuery,
-        request.id()
-    );
+        auto result = _pgCluster->Execute(
+            userver::storages::postgres::ClusterHostType::kMaster, kQuery,
+            request.id()
+        );
 
-    if (result.IsEmpty()) {
+        if (result.IsEmpty()) {
+            throw userver::ugrpc::server::ErrorWithStatus(
+                grpc::Status(grpc::StatusCode::NOT_FOUND, "Undefined user")
+            );
+        }
+
+        auto [id, name, key] =
+            result.AsSingleRow<std::tuple<int64_t, std::string, std::string>>(
+                userver::storages::postgres::kRowTag
+            );
+
+        aquarium::api::GetUserResponse response;
+        auto* user = response.mutable_user();
+        user->set_id(id);
+        user->set_name(std::move(name));
+        user->set_key(std::move(key));
+
+        return response;
+
+    } catch (const userver::ugrpc::server::ErrorWithStatus&) {
+        throw;
+    } catch (const std::exception& e) {
         throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(grpc::StatusCode::NOT_FOUND, "Undefined user")
+            grpc::Status(
+                grpc::StatusCode::INTERNAL,
+                std::string("DB/Internal error: ") + e.what()
+            )
         );
     }
-
-    auto [id, name, key] =
-        result.AsSingleRow<std::tuple<int64_t, std::string, std::string>>();
-
-    aquarium::api::GetUserResponse response;
-    auto* user = response.mutable_user();
-    user->set_id(id);
-    user->set_name(std::move(name));
-    user->set_key(std::move(key));
-
-    return response;
 }
 
 UserStoreService::AddUserResult UserStoreService::AddUser(

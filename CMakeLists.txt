@@ -36,6 +36,7 @@ add_library(
     ${PROJECT_NAME}_objs
     src/Utils/HealthService.cpp
     src/Users/UserStoreService.cpp
+    src/Users/Auth.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_objs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

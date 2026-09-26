@@ -1,6 +1,9 @@
-CREATE TABLE IF NOT EXISTS users (
-    id BIGSERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    key VARCHAR(255) NOT NULL UNIQUE,
-    admin BOOLEAN DEFAUlT false
+CREATE SCHEMA IF NOT EXISTS user_schema;
+
+CREATE TABLE IF NOT EXISTS user_schema.tokens (
+    id bigserial PRIMARY KEY,
+    key text NOT NULL UNIQUE,
+    name varchar(100) NOT NULL,
+    scopes text[] NOT NULL,
+    updated timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

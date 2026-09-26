@@ -52,5 +52,9 @@ components_manager:
       dns_resolver: async
       sync-start: true
 
+    auth-pg-cache:
+      pgcomponent: postgres-db
+      update-interval: 10s
+
     dns-client:
       fs-task-processor: fs-task-processor
