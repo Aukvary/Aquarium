@@ -7,39 +7,42 @@
 namespace Aquarium::Users {
 
 void AuthServiceMiddleware::OnCallStart(
-    userver::ugrpc::server::MiddlewareCallContext& ctx
+    userver::ugrpc::server::MiddlewareCallContext& context
 ) const {
-    const auto& metaData = ctx.GetServerContext().client_metadata();
+    const auto& metadata = context.GetServerContext().client_metadata();
 
-    auto it = metaData.find("authorization");
-    if (it == metaData.end()) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(
-                grpc::StatusCode::UNAUTHENTICATED,
+    auto it = metadata.find("authorization");
+    if (it == metadata.cend()) {
+        context.SetError(
+            ::grpc::Status{
+                ::grpc::StatusCode::UNAUTHENTICATED,
                 "Missing authorization metadata"
-            )
+            }
         );
+        return;
     }
 
     std::string_view authHeader(it->second.data(), it->second.size());
     if (!authHeader.starts_with("Bearer ")) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(
-                grpc::StatusCode::UNAUTHENTICATED,
+        context.SetError(
+            ::grpc::Status{
+                ::grpc::StatusCode::UNAUTHENTICATED,
                 "Invalid authorization format"
-            )
+            }
         );
+        return;
     }
 
     std::string token(authHeader.substr(7));
     auto snapShot = _authCache.Get();
 
     if (!snapShot->contains(token)) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(
-                grpc::StatusCode::UNAUTHENTICATED, "Invalid or expired token"
-            )
+        context.SetError(
+            ::grpc::Status{
+                ::grpc::StatusCode::UNAUTHENTICATED, "Invalid or expired token"
+            }
         );
+        return;
     }
 }
 

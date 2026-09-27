@@ -27,8 +27,6 @@ UserStoreService::UserStoreService(
     const userver::components::ComponentContext& ctx
 )
     : UserStoreService::Component{cfg, ctx},
-      _inviteKey(cfg["invite_key"].As<std::string>()),
-      _authCache(ctx.FindComponent<AuthCache>()),
       _pgCluster(ctx.FindComponent<userver::components::Postgres>("postgres-db")
                      .GetCluster()) {}
 
@@ -117,17 +115,16 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
     AddUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
-        "INSERT INTO users (name, key) VALUES ($1, $2) RETURNING id"
+        "INSERT INTO user_schema.tokens (name) VALUES ($1) RETURNING id, key"
     };
 
     std::string name = std::move(*request.mutable_name());
-    std::string key = userver::utils::generators::GenerateUuid();
 
     auto result = _pgCluster->Execute(
-        userver::storages::postgres::ClusterHostType::kMaster, kQuery, name, key
+        userver::storages::postgres::ClusterHostType::kMaster, kQuery, name
     );
 
-    int64_t id = result.AsSingleRow<int64_t>();
+    auto [id, key] = result.AsSingleRow<std::tuple<int64_t, std::string>>();
 
     aquarium::api::AddUserResponse response;
     auto* user = response.mutable_user();

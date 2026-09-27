@@ -28,6 +28,7 @@
 #include <userver/storages/postgres/postgres_fwd.hpp>
 #include <userver/ugrpc/server/service_component_base.hpp>
 #include <userver/yaml_config/merge_schemas.hpp>
+#include <utility>
 #include <vector>
 
 namespace Aquarium::Users {
@@ -69,8 +70,6 @@ class UserStoreService final
     using DeleteUserRequest = aquarium::api::DeleteUserRequest;
 
 private:
-    std::string _inviteKey;
-    AuthCache& _authCache;
     userver::storages::postgres::ClusterPtr _pgCluster;
 
 public:
@@ -134,11 +133,15 @@ public:
 class AuthServiceMiddleware final
     : public userver::ugrpc::server::MiddlewareBase {
 private:
+    const std::string_view _inviteKey;
     const AuthCache& _authCache;
 
 public:
-    explicit AuthServiceMiddleware(const AuthCache& authCache)
-        : _authCache(authCache) {}
+    explicit AuthServiceMiddleware(
+        const std::string_view inviteKey,
+        const AuthCache& authCache
+    )
+        : _inviteKey(inviteKey), _authCache(authCache) {}
 
     void OnCallStart(
         userver::ugrpc::server::MiddlewareCallContext& ctx
@@ -152,6 +155,7 @@ class AuthServiceMiddlewareComponent
     using Base = userver::ugrpc::server::MiddlewareFactoryComponentBase;
 
 private:
+    std::string _inviteKey;
     const AuthCache& _authCache;
 
 public:
@@ -161,14 +165,15 @@ public:
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     )
-        : Base{cfg, ctx}, _authCache(ctx.FindComponent<AuthCache>()) {}
+        : Base{cfg, ctx}, _inviteKey(cfg["invite-key"].As<std::string>()),
+          _authCache(ctx.FindComponent<AuthCache>()) {}
 
     [[nodiscard]]
     std::shared_ptr<const MiddlewareBase> CreateMiddleware(
         const userver::ugrpc::server::ServiceInfo&,
         const userver::yaml_config::YamlConfig&
     ) const override {
-        return std::make_shared<AuthServiceMiddleware>(_authCache);
+        return std::make_shared<AuthServiceMiddleware>(_inviteKey, _authCache);
     }
 };
 
