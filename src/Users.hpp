@@ -29,7 +29,6 @@
 #include <userver/storages/postgres/postgres_fwd.hpp>
 #include <userver/ugrpc/server/service_component_base.hpp>
 #include <userver/yaml_config/merge_schemas.hpp>
-#include <utility>
 #include <vector>
 
 namespace Aquarium::Users {
