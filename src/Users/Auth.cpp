@@ -1,5 +1,7 @@
 #include "./Users.hpp"
 
+#include <boost/uuid/string_generator.hpp>
+#include <boost/uuid/uuid.hpp>
 #include <string>
 #include <string_view>
 #include <userver/ugrpc/server/exceptions.hpp>
@@ -34,6 +36,7 @@ void AuthServiceMiddleware::OnCallStart(
     }
 
     std::string token(authHeader.substr(7));
+
     auto snapShot = _authCache.Get();
 
     if (!snapShot->contains(token)) {

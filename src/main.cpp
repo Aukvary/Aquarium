@@ -9,6 +9,7 @@
 #include <userver/testsuite/testsuite_support.hpp>
 #include <userver/ugrpc/client/component_list.hpp>
 #include <userver/ugrpc/server/component_list.hpp>
+#include <userver/ugrpc/server/service_component_base.hpp>
 #include <userver/utest/using_namespace_userver.hpp>
 #include <userver/utils/daemon_run.hpp>
 
@@ -23,6 +24,8 @@ int main(int argc, char* argv[]) {
             .Append<userver::components::Postgres>("postgres-db")
             .Append<Aquarium::Utils::UtilsServiceComponent>()
             .Append<Aquarium::Users::UserStoreClientComponent>()
-            .Append<Aquarium::Users::UserStoreService>();
+            .Append<Aquarium::Users::UserStoreService>()
+            .Append<Aquarium::Users::AuthServiceMiddlewareComponent>()
+            .Append<Aquarium::Users::AuthCache>();
     return utils::DaemonMain(argc, argv, component_list);
 }

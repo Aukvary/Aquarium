@@ -28,14 +28,15 @@ UserStoreService::UserStoreService(
 )
     : UserStoreService::Component{cfg, ctx},
       _pgCluster(ctx.FindComponent<userver::components::Postgres>("postgres-db")
-                     .GetCluster()) {}
+                     .GetCluster()),
+      _authCache(ctx.FindComponent<AuthCache>()) {}
 
 UserStoreService::GetAllResult UserStoreService::GetAll(
     CallContext& /*ctx*/,
     GetAllUsersRequest&& /*request*/
 ) {
     static const userver::storages::postgres::Query kQuery{
-        "SELECT id, name, key FROM users"
+        "SELECT id, name, key FROM user_schema.tokens"
     };
 
     try {
@@ -71,7 +72,7 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
 ) {
     try {
         static const userver::storages::postgres::Query kQuery{
-            "SELECT id, name, key FROM users WHERE id = $1",
+            "SELECT id, name, key FROM user_schema.tokens WHERE id = $1",
         };
 
         auto result = _pgCluster->Execute(
@@ -143,7 +144,8 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
     UpdateUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
-        "UPDATE users SET name = $2 WHERE key = $1 RETURNING id, name, key"
+        "UPDATE user_schema.tokens SET name = $2 WHERE key = $1 RETURNING id, "
+        "name, key"
     };
 
     try {
@@ -184,7 +186,7 @@ UserStoreService::DeleteUserResult UserStoreService::DeleteUser(
     DeleteUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
-        "DELETE FROM users WHERE id = $1"
+        "DELETE FROM user_schema.tokens WHERE id = $1"
     };
 
     auto result = _pgCluster->Execute(

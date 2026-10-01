@@ -21,14 +21,12 @@ components_manager:
           overflow_behavior: discard
 
     dynamic-config:
-
     testsuite-support:
 
     grpc-server:
       port: 8081
 
     grpc-client-factory:
-
     grpc-client-common:
       blocking-task-processor: main-task-processor
 
@@ -37,14 +35,27 @@ components_manager:
 
     health-service:
       health-prefix: "aquarium"
+      middlewares:
+        auth-service-middleware:
+          enabled: false     
       task-processor: main-task-processor
+
+    auth-service-middleware:
+      invite-key: "secret_invite_key_value"
 
     user-store-client:
       endpoint: "127.0.0.1:8081"
 
+    grpc-server-middlewares-pipeline:
+      middlewares:
+        auth-service-middleware:
+          enabled: true
+
     user-store-service:
       task-processor: main-task-processor
-      invite_key: "secret_invite_key_value"
+      middlewares:
+        auth-service-middleware:
+          enabled: true
 
     postgres-db:
       dbconnection: $pg_connection
@@ -55,6 +66,7 @@ components_manager:
     auth-pg-cache:
       pgcomponent: postgres-db
       update-interval: 10s
+      chunk-size: 0
 
     dns-client:
       fs-task-processor: fs-task-processor

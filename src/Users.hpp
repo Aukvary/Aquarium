@@ -1,5 +1,4 @@
 #pragma once
-
 #include "userver/components/component_config.hpp"
 #include "userver/storages/postgres/io/chrono.hpp"
 #include "userver/ugrpc/client/simple_client_component.hpp"
@@ -7,6 +6,8 @@
 #include "userver/ugrpc/server/middlewares/fwd.hpp"
 #include "userver/yaml_config/yaml_config.hpp"
 
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_hash.hpp>
 #include <cstdint>
 #include <google/protobuf/stubs/port.h>
 #include <memory>
@@ -32,12 +33,12 @@
 #include <vector>
 
 namespace Aquarium::Users {
-
 struct UserDbInfo {
     std::int64_t id;
     std::string key;
     std::string name;
     std::vector<std::string> scopes;
+    bool active;
 };
 
 struct AuthCachePolicy {
@@ -53,8 +54,8 @@ struct AuthCachePolicy {
 
     static constexpr auto kKeyMember = &UserDbInfo::key;
     static constexpr const char* kQuery =
-        "SELECT id, key, scopes, name FROM user_schema.tokens";
-    static constexpr const char* kUpdatedField = "update";
+        "SELECT id, key, name, scopes, active FROM user_schema.tokens";
+    static constexpr const char* kUpdatedField = "updated";
 };
 
 using AuthCache = userver::components::PostgreCache<AuthCachePolicy>;
@@ -71,6 +72,7 @@ class UserStoreService final
 
 private:
     userver::storages::postgres::ClusterPtr _pgCluster;
+    AuthCache& _authCache;
 
 public:
     static constexpr std::string_view kName = "user-store-service";
@@ -133,10 +135,14 @@ public:
 class AuthServiceMiddleware final
     : public userver::ugrpc::server::MiddlewareBase {
 private:
-    const std::string_view _inviteKey;
+    const std::string _inviteKey;
     const AuthCache& _authCache;
 
 public:
+    static inline const auto kDependency =
+        userver::middlewares::MiddlewareDependencyBuilder()
+            .InGroup<userver::middlewares::groups::Auth>();
+
     explicit AuthServiceMiddleware(
         const std::string_view inviteKey,
         const AuthCache& authCache
@@ -155,25 +161,40 @@ class AuthServiceMiddlewareComponent
     using Base = userver::ugrpc::server::MiddlewareFactoryComponentBase;
 
 private:
-    std::string _inviteKey;
-    const AuthCache& _authCache;
+    std::shared_ptr<const AuthServiceMiddleware> _middleware;
 
 public:
     static constexpr std::string_view kName = "auth-service-middleware";
+    static userver::yaml_config::Schema GetStaticConfigSchema() {
+        return userver::yaml_config::MergeSchemas<Base>(R"(
+type: object
+description: Auth service middleware component
+additionalProperties: false
+properties:
+    invite-key:
+        type: string
+        description: Secret invite key
+)");
+    }
 
     AuthServiceMiddlewareComponent(
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     )
-        : Base{cfg, ctx}, _inviteKey(cfg["invite-key"].As<std::string>()),
-          _authCache(ctx.FindComponent<AuthCache>()) {}
+        : Base{cfg, ctx}, _middleware{
+                              std::make_shared<const AuthServiceMiddleware>(
+                                  cfg["invite-key"].As<std::string>(),
+                                  ctx.FindComponent<AuthCache>()
+                              )
+
+                          } {}
 
     [[nodiscard]]
     std::shared_ptr<const MiddlewareBase> CreateMiddleware(
         const userver::ugrpc::server::ServiceInfo&,
         const userver::yaml_config::YamlConfig&
     ) const override {
-        return std::make_shared<AuthServiceMiddleware>(_inviteKey, _authCache);
+        return _middleware;
     }
 };
 
