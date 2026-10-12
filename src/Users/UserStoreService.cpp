@@ -119,24 +119,36 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
         "INSERT INTO user_schema.tokens (name) VALUES ($1) RETURNING id, key"
     };
 
-    std::string name = std::move(*request.mutable_name());
+    try {
+        std::string name = std::move(*request.mutable_name());
 
-    auto result = _pgCluster->Execute(
-        userver::storages::postgres::ClusterHostType::kMaster, kQuery, name
-    );
+        auto result = _pgCluster->Execute(
+            userver::storages::postgres::ClusterHostType::kMaster, kQuery, name
+        );
 
-    auto [id, key] = result.AsSingleRow<std::tuple<int64_t, std::string>>();
+        auto [id, key] = result.AsSingleRow<std::tuple<int64_t, std::string>>(
+            userver::storages::postgres::kRowTag
+        );
 
-    aquarium::api::AddUserResponse response;
-    auto* user = response.mutable_user();
+        aquarium::api::AddUserResponse response;
+        auto* user = response.mutable_user();
 
-    user->set_id(id);
-    user->set_name(std::move(name));
-    user->set_key(std::move(key));
+        user->set_id(id);
+        user->set_name(std::move(name));
+        user->set_key(std::move(key));
 
-    _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
+        return response;
+    } catch (const std::exception& ex) {
+        LOG_ERROR() << "AddUser error: " << ex.what();
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::INTERNAL,
+                std::string("DB/Internal error: ") + ex.what()
+            )
+        );
+    }
 
-    return response;
+    // _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 }
 
 UserStoreService::UpdateUserResult UserStoreService::UpdateUser(

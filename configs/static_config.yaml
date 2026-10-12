@@ -35,12 +35,14 @@ components_manager:
 
     health-service:
       health-prefix: "aquarium"
+      internal-key: $internal-key
       middlewares:
         auth-service-middleware:
           enabled: false     
       task-processor: main-task-processor
 
     auth-service-middleware:
+      internal-key: $internal-key
       invite-key: "secret_invite_key_value"
 
     user-store-client:

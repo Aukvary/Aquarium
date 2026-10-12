@@ -7,7 +7,6 @@
 #include <userver/ugrpc/server/exceptions.hpp>
 
 namespace Aquarium::Users {
-
 void AuthServiceMiddleware::OnCallStart(
     userver::ugrpc::server::MiddlewareCallContext& context
 ) const {
@@ -75,6 +74,8 @@ void AuthServiceMiddleware::OnCallStart(
     }
 
     std::string token(authHeader.substr(7));
+    if (token == _internalKey)
+        return;
 
     auto snapShot = _authCache.Get();
 

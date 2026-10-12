@@ -24,9 +24,13 @@ private:
     using UserStoreClient = ::aquarium::api::UserStoreServiceClient;
 
     UserStoreClient& _userStore;
+    std::string _internalKey;
 
 public:
-    explicit UtilsService(UserStoreClient& userStore);
+    explicit UtilsService(
+        UserStoreClient& userStore,
+        std::string_view internalKey
+    );
 
     HealthResult Health(CallContext& context, HealthRequest&& request) override;
 };

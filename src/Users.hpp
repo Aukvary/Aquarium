@@ -136,6 +136,7 @@ class AuthServiceMiddleware final
 private:
     const std::string _inviteKey;
     const AuthCache& _authCache;
+    const std::string _internalKey;
 
 public:
     static inline const auto kDependency =
@@ -144,9 +145,11 @@ public:
 
     explicit AuthServiceMiddleware(
         const std::string_view inviteKey,
-        const AuthCache& authCache
+        const AuthCache& authCache,
+        const std::string_view internalKey
     )
-        : _inviteKey(inviteKey), _authCache(authCache) {}
+        : _inviteKey(inviteKey), _authCache(authCache),
+          _internalKey(internalKey) {}
 
     void OnCallStart(
         userver::ugrpc::server::MiddlewareCallContext& ctx
@@ -173,6 +176,9 @@ properties:
     invite-key:
         type: string
         description: Secret invite key
+    internal-key:
+        type: string
+        description: Secret invite key
 )");
     }
 
@@ -183,7 +189,8 @@ properties:
         : Base{cfg, ctx}, _middleware{
                               std::make_shared<const AuthServiceMiddleware>(
                                   cfg["invite-key"].As<std::string>(),
-                                  ctx.FindComponent<AuthCache>()
+                                  ctx.FindComponent<AuthCache>(),
+                                  cfg["internal-key"].As<std::string>()
                               )
 
                           } {}
