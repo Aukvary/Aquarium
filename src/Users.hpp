@@ -4,6 +4,8 @@
 #include "userver/ugrpc/client/simple_client_component.hpp"
 #include "userver/ugrpc/server/middlewares/base.hpp"
 #include "userver/ugrpc/server/middlewares/fwd.hpp"
+#include "userver/ugrpc/server/storage_context.hpp"
+#include "userver/utils/any_storage.hpp"
 #include "userver/yaml_config/yaml_config.hpp"
 
 #include <boost/uuid/uuid.hpp>
@@ -38,7 +40,12 @@ struct UserDbInfo {
     std::string name;
     std::vector<std::string> scopes;
     bool active;
+    bool admin;
 };
+
+inline const userver::utils::
+    AnyStorageDataTag<userver::ugrpc::server::StorageContext, UserDbInfo>
+        kAuthUser{};
 
 struct AuthCachePolicy {
     static constexpr std::string_view kName = "auth-pg-cache";
@@ -154,6 +161,27 @@ public:
     void OnCallStart(
         userver::ugrpc::server::MiddlewareCallContext& ctx
     ) const override;
+
+    bool CheckAddUser(
+        userver::ugrpc::server::MiddlewareCallContext& ctx,
+        std::string_view callName,
+        const auto& metadata
+    ) const;
+    bool CheckUserAuth(
+        userver::ugrpc::server::MiddlewareCallContext& ctx,
+        const auto& metadata
+    ) const;
+
+    void PostRecvMessage(
+        userver::ugrpc::server::MiddlewareCallContext& context,
+        google::protobuf::Message& request
+    ) const override;
+
+    bool CheckSelfOrAdmin(
+        std::string_view callName,
+        const UserDbInfo& user,
+        std::int64_t id
+    ) const;
 };
 
 class AuthServiceMiddlewareComponent

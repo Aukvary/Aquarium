@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package aquarium.api;
+
+import "google/protobuf/timestamp.proto";
+
+enum TaskStatus {
+  UNSPECIFIED = 0;
+  PLAN = 1;
+  ACTIVE = 2;
+  COMPLETE = 3;
+  ARCHIVE = 4;
+}
+
+message Task {
+  int64 id = 1;
+  string title = 2;
+  string description = 3;
+
+  int64 authorId = 4;
+  repeated int64 workerIds = 5;
+  optional int64 checkerId = 6;
+
+  TaskStatus status = 7;
+
+  google.protobuf.Timestamp createdAt = 8;
+  google.protobuf.Timestamp updatedAt = 9;
+  optional google.protobuf.Timestamp dueDate = 10;
+}
+
+message CreateTaskRequest {
+  string title = 1;
+  string description = 2;
+
+  int64 authorId = 3;
+  repeated int64 workerIds = 4;
+  optional int64 checkerId = 5;
+
+  TaskStatus status = 6;
+  optional google.protobuf.Timestamp dueDate = 7;
+}
+
+message CreateTaskResponse {
+  Task task = 1;
+}
+
+message GetTaskRequest {
+  int64 id = 1;
+}
+
+message GetTaskResponse {
+  Task task = 1;
+}
+
+message GetTasksRequest {
+  optional TaskStatus status = 1;
+  optional int64 authorId = 2;
+  optional int64 workerId = 3;
+}
+
+message GetTasksResponse {
+  repeated Task tasks = 1;
+}
+
+message UpdateTaskRequest {
+  int64 id = 1;
+  optional string title = 2;
+  optional string description = 3;
+  optional int64 checkerId = 4;
+  optional google.protobuf.Timestamp dueDate = 5;
+}
+
+message UpdateTaskResponse {
+  Task task = 1;
+}
+
+message UpdateTaskStatusRequest {
+  int64 id = 1;
+  TaskStatus status = 2;
+}
+
+message UpdateTaskStatusResponse {
+  Task task = 1;
+}
+
+message AssignWorkerRequest {
+  int64 id = 1;
+  int64 workerId = 2;
+}
+
+message AssignWorkerResponse {
+  Task task = 1;
+}
+
+message RemoveWorkerRequest {
+  int64 id = 1;
+  int64 workerId = 2;
+}
+
+message RemoveWorkerResponse {
+  Task task = 1;
+}
+
+message DeleteTaskRequest {
+  int64 id = 1;
+}
+
+message DeleteTaskResponse {
+  bool success = 1;
+}
+
+service TaskStoreService {
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
+  rpc GetTasks(GetTasksRequest) returns (GetTasksResponse);
+  rpc UpdateTask(UpdateTaskRequest) returns (UpdateTaskResponse);
+  rpc UpdateTaskStatus(UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse);
+  rpc AssignWorker(AssignWorkerRequest) returns (AssignWorkerResponse);
+  rpc RemoveWorker(RemoveWorkerRequest) returns (RemoveWorkerResponse);
+  rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse);
+}

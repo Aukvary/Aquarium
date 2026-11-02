@@ -32,7 +32,7 @@ message AddUserResponse {
 }
 
 message UpdateUserRequest {
-  string key = 1;
+  int64 id = 1;  
   string newName = 2;
 }
 

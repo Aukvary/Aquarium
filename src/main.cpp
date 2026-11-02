@@ -1,3 +1,4 @@
+#include "./TaskStore.hpp"
 #include "./Users.hpp"
 #include "./Utils.hpp"
 #include "userver/ugrpc/client/client_factory_component.hpp"
@@ -26,6 +27,8 @@ int main(int argc, char* argv[]) {
             .Append<Aquarium::Users::UserStoreClientComponent>()
             .Append<Aquarium::Users::UserStoreService>()
             .Append<Aquarium::Users::AuthServiceMiddlewareComponent>()
-            .Append<Aquarium::Users::AuthCache>();
+            .Append<Aquarium::Users::AuthCache>()
+            .Append<Aquarium::Tasks::TaskStoreService>()
+            .Append<Aquarium::Tasks::TaskCache>();
     return utils::DaemonMain(argc, argv, component_list);
 }

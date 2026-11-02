@@ -16,7 +16,7 @@ components_manager:
     logging:
       loggers:
         default:
-          file_path: '@stderr'
+          file_path: "@stderr"
           level: debug
           overflow_behavior: discard
 
@@ -38,7 +38,7 @@ components_manager:
       internal-key: $internal-key
       middlewares:
         auth-service-middleware:
-          enabled: false     
+          enabled: false
       task-processor: main-task-processor
 
     auth-service-middleware:
@@ -66,6 +66,11 @@ components_manager:
       sync-start: true
 
     auth-pg-cache:
+      pgcomponent: postgres-db
+      update-interval: 10s
+      chunk-size: 0
+
+    tasks-pg-cache:
       pgcomponent: postgres-db
       update-interval: 10s
       chunk-size: 0

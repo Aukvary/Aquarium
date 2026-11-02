@@ -35,27 +35,16 @@ UserStoreService::GetAllResult UserStoreService::GetAll(
     CallContext& /*ctx*/,
     GetAllUsersRequest&& /*request*/
 ) {
-    static const userver::storages::postgres::Query kQuery{
-        "SELECT id, name, key FROM user_schema.tokens"
-    };
-
     try {
-        auto result = _pgCluster->Execute(
-            userver::storages::postgres::ClusterHostType::kMaster, kQuery
-        );
+        auto snapshot = _authCache.Get();
 
         aquarium::api::GetAllUsersResponse response;
 
-        auto rows =
-            result.AsSetOf<std::tuple<int64_t, std::string, std::string>>(
-                userver::storages::postgres::kRowTag
-            );
-
-        for (auto [id, name, key] : rows) {
+        for (const auto& [key, user_info] : *snapshot) {
             auto* user = response.add_users();
-            user->set_id(id);
-            user->set_name(std::move(name));
-            user->set_key(std::move(key));
+            user->set_id(user_info.id);
+            user->set_name(user_info.name);
+            user->set_key(user_info.key);
         }
 
         return response;
@@ -67,35 +56,32 @@ UserStoreService::GetAllResult UserStoreService::GetAll(
 }
 
 UserStoreService::GetUserResult UserStoreService::GetUser(
-    CallContext& ctx,
+    CallContext& /*ctx*/,
     GetUserRequest&& request
 ) {
     try {
-        static const userver::storages::postgres::Query kQuery{
-            "SELECT id, name, key FROM user_schema.tokens WHERE id = $1",
-        };
+        auto snapshot = _authCache.Get();
 
-        auto result = _pgCluster->Execute(
-            userver::storages::postgres::ClusterHostType::kMaster, kQuery,
-            request.id()
+        const auto target_id = request.id();
+        auto it = std::find_if(
+            snapshot->begin(), snapshot->end(), [target_id](const auto& pair) {
+                return pair.second.id == target_id;
+            }
         );
 
-        if (result.IsEmpty()) {
+        if (it == snapshot->end()) {
             throw userver::ugrpc::server::ErrorWithStatus(
                 grpc::Status(grpc::StatusCode::NOT_FOUND, "Undefined user")
             );
         }
 
-        auto [id, name, key] =
-            result.AsSingleRow<std::tuple<int64_t, std::string, std::string>>(
-                userver::storages::postgres::kRowTag
-            );
+        const auto& user_info = it->second;
 
         aquarium::api::GetUserResponse response;
         auto* user = response.mutable_user();
-        user->set_id(id);
-        user->set_name(std::move(name));
-        user->set_key(std::move(key));
+        user->set_id(user_info.id);
+        user->set_name(user_info.name);
+        user->set_key(user_info.key);
 
         return response;
 
@@ -105,14 +91,14 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
         throw userver::ugrpc::server::ErrorWithStatus(
             grpc::Status(
                 grpc::StatusCode::INTERNAL,
-                std::string("DB/Internal error: ") + e.what()
+                std::string("Internal error: ") + e.what()
             )
         );
     }
 }
 
 UserStoreService::AddUserResult UserStoreService::AddUser(
-    CallContext& ctx,
+    CallContext& /*ctx*/,
     AddUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
@@ -129,6 +115,8 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
         auto [id, key] = result.AsSingleRow<std::tuple<int64_t, std::string>>(
             userver::storages::postgres::kRowTag
         );
+
+        _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
         aquarium::api::AddUserResponse response;
         auto* user = response.mutable_user();
@@ -147,23 +135,21 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
             )
         );
     }
-
-    // _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 }
 
 UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
-    CallContext& ctx,
+    CallContext& /*ctx*/,
     UpdateUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
-        "UPDATE user_schema.tokens SET name = $2 WHERE key = $1 RETURNING id, "
+        "UPDATE user_schema.tokens SET name = $2 WHERE id = $1 RETURNING id, "
         "name, key"
     };
 
     try {
         auto result = _pgCluster->Execute(
             userver::storages::postgres::ClusterHostType::kMaster, kQuery,
-            request.key(), request.newname()
+            request.id(), request.newname()
         );
 
         if (result.IsEmpty()) {
@@ -175,6 +161,8 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
         using UserRow = std::tuple<int64_t, std::string, std::string>;
         auto [id, name, key] =
             result.AsSingleRow<UserRow>(userver::storages::postgres::kRowTag);
+
+        _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
         aquarium::api::UpdateUserResponse response;
         auto* user = response.mutable_user();
@@ -194,21 +182,34 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
 }
 
 UserStoreService::DeleteUserResult UserStoreService::DeleteUser(
-    CallContext& ctx,
+    CallContext& /*ctx*/,
     DeleteUserRequest&& request
 ) {
     static const userver::storages::postgres::Query kQuery{
         "DELETE FROM user_schema.tokens WHERE id = $1"
     };
 
-    auto result = _pgCluster->Execute(
-        userver::storages::postgres::ClusterHostType::kMaster, kQuery,
-        static_cast<int64_t>(request.id())
-    );
+    try {
+        auto result = _pgCluster->Execute(
+            userver::storages::postgres::ClusterHostType::kMaster, kQuery,
+            static_cast<int64_t>(request.id())
+        );
 
-    aquarium::api::DeleteUserResponse response;
-    response.set_success(result.RowsAffected() > 0);
+        bool success = result.RowsAffected() > 0;
+        if (success) {
+            _authCache.InvalidateAsync(
+                userver::cache::UpdateType::kIncremental
+            );
+        }
 
-    return response;
+        aquarium::api::DeleteUserResponse response;
+        response.set_success(success);
+
+        return response;
+    } catch (const std::exception& ex) {
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(grpc::StatusCode::INTERNAL, ex.what())
+        );
+    }
 }
 }; // namespace Aquarium::Users
