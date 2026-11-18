@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <google/protobuf/timestamp.pb.h>
+#include <optional>
 #include <string>
 #include <TaskStoreService.grpc.pb.h>
 #include <TaskStoreService.pb.h>
@@ -23,9 +24,10 @@ struct TaskDbInfo {
     std::int64_t AuthorId;
     std::vector<std::int64_t> WorkerIds;
     std::int64_t CheckerId;
-    aquarium::api::TaskStatus status;
+    std::int16_t status;
     userver::storages::postgres::TimePointTz CreatedAt;
     userver::storages::postgres::TimePointTz UpdatedAt;
+    std::optional<userver::storages::postgres::TimePointTz> DueDate;
 };
 
 struct TaskCachePolicy {
@@ -37,7 +39,8 @@ struct TaskCachePolicy {
 
     static constexpr auto kKeyMember = &TaskDbInfo::Id;
     static constexpr const char* kQuery =
-        "SELECT id, workers, checker_id, status, created_at, updated_at "
+        "SELECT id, title, description, author_id, workers, checker_id, "
+        "status, created_at, updated_at, due_date "
         "FROM task_schema.task_cache_view";
     static constexpr const char* kUpdatedField = "updated_at";
 };
@@ -69,6 +72,11 @@ public:
     GetTaskResult GetTask(
         CallContext& ctx,
         aquarium::api::GetTaskRequest&& request
+    ) override;
+
+    GetTasksResult GetTasks(
+        CallContext& ctx,
+        aquarium::api::GetTasksRequest&& request
     ) override;
 
     UpdateTaskResult UpdateTask(

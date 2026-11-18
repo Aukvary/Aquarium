@@ -60,7 +60,7 @@ struct AuthCachePolicy {
 
     static constexpr auto kKeyMember = &UserDbInfo::key;
     static constexpr const char* kQuery =
-        "SELECT id, key, name, scopes, active FROM user_schema.tokens";
+        "SELECT id, key, name, scopes, active, admin FROM user_schema.tokens";
     static constexpr const char* kUpdatedField = "updated";
 };
 
@@ -87,18 +87,6 @@ public:
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     );
-
-    static userver::yaml_config::Schema GetStaticConfigSchema() {
-        return userver::yaml_config::MergeSchemas<Base>(R"(
-type: object
-description: UserStore component
-additionalProperties: false
-properties:
-    invite_key:
-        type: string
-        description: Secret invite key
-)");
-    }
 
     GetAllResult GetAll(
         CallContext& ctx,

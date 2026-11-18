@@ -146,9 +146,7 @@ TaskStoreService::GetTaskResult TaskStoreService::GetTask(
 ) {
     auto snapshot = _taskCache.Get();
     const auto id = request.id();
-    auto it = std::ranges::find_if(*snapshot, [id](const auto& pair) {
-        return pair.second.Id == id;
-    });
+    auto it = snapshot->find(id);
 
     if (it == snapshot->end()) {
         throw userver::ugrpc::server::ErrorWithStatus(
@@ -167,37 +165,146 @@ TaskStoreService::GetTaskResult TaskStoreService::GetTask(
     task->set_description(task_info.Description);
 
     task->set_authorid(task_info.AuthorId);
-    for (int i = 0; auto id : task_info.WorkerIds) {
-        task->set_workerids(i++, id);
+    for (const auto worker_id : task_info.WorkerIds) {
+        task->add_workerids(worker_id);
+    }
+    if (task_info.CheckerId != 0) {
+        task->set_checkerid(task_info.CheckerId);
     }
 
-    task->set_status(task_info.status);
+    task->set_status(static_cast<aquarium::api::TaskStatus>(task_info.status));
+
+    auto toProtoTimestamp =
+        [](const userver::storages::postgres::TimePointTz& tptz) {
+            google::protobuf::Timestamp ts;
+            auto duration = tptz.GetUnderlying().time_since_epoch();
+            auto seconds =
+                std::chrono::duration_cast<std::chrono::seconds>(duration);
+            auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                duration - seconds
+            );
+            ts.set_seconds(seconds.count());
+            ts.set_nanos(static_cast<std::int32_t>(nanos.count()));
+            return ts;
+        };
+
+    *task->mutable_createdat() = toProtoTimestamp(task_info.CreatedAt);
+    *task->mutable_updatedat() = toProtoTimestamp(task_info.UpdatedAt);
+    if (task_info.DueDate.has_value()) {
+        *task->mutable_duedate() = toProtoTimestamp(*task_info.DueDate);
+    }
 
     return response;
 }
 
+TaskStoreService::GetTasksResult TaskStoreService::GetTasks(
+    CallContext& /*ctx*/,
+    aquarium::api::GetTasksRequest&& /*request*/
+) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Not implemented yet")
+    );
+}
+
 TaskStoreService::UpdateTaskResult TaskStoreService::UpdateTask(
-    CallContext& ctx,
-    aquarium::api::UpdateTaskRequest&& request
-) {}
+    CallContext& /*ctx*/,
+    aquarium::api::UpdateTaskRequest&& /*request*/
+) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Not implemented yet")
+    );
+}
 
 TaskStoreService::UpdateTaskStatusResult TaskStoreService::UpdateTaskStatus(
-    CallContext& ctx,
-    aquarium::api::UpdateTaskStatusRequest&& request
-) {}
+    CallContext& /*ctx*/,
+    aquarium::api::UpdateTaskStatusRequest&& /*request*/
+) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Not implemented yet")
+    );
+}
 
 TaskStoreService::AssignWorkerResult TaskStoreService::AssignWorker(
-    CallContext& ctx,
-    aquarium::api::AssignWorkerRequest&& request
-) {}
+    CallContext& /*ctx*/,
+    aquarium::api::AssignWorkerRequest&& /*request*/
+) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Not implemented yet")
+    );
+}
 
 TaskStoreService::RemoveWorkerResult TaskStoreService::RemoveWorker(
-    CallContext& ctx,
-    aquarium::api::RemoveWorkerRequest&& request
-) {}
+    CallContext& /*ctx*/,
+    aquarium::api::RemoveWorkerRequest&& /*request*/
+) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "Not implemented yet")
+    );
+}
 
 TaskStoreService::DeleteTaskResult TaskStoreService::DeleteTask(
     CallContext& ctx,
     aquarium::api::DeleteTaskRequest&& request
-) {}
+) {
+    static const userver::storages::postgres::Query kSelectTaskAuthor{
+        "SELECT author_id FROM task_schema.tasks WHERE id = $1",
+        userver::storages::postgres::Query::Name{"select_task_author"}
+    };
+
+    static const userver::storages::postgres::Query kDeleteTask{
+        "DELETE FROM task_schema.tasks WHERE id = $1",
+        userver::storages::postgres::Query::Name{"delete_task"}
+    };
+
+    try {
+        const auto taskId = request.id();
+
+        const auto* user = ctx.GetStorageContext().GetOptional(Users::kAuthUser);
+        auto checkRes = _pgCluster->Execute(
+            userver::storages::postgres::ClusterHostType::kMaster,
+            kSelectTaskAuthor,
+            taskId
+        );
+
+        if (checkRes.IsEmpty()) {
+            throw userver::ugrpc::server::ErrorWithStatus(
+                grpc::Status(grpc::StatusCode::NOT_FOUND, "Task not found")
+            );
+        }
+
+        if (user && !user->admin) {
+            auto authorId = checkRes.AsSingleRow<std::int64_t>();
+            if (user->id != authorId) {
+                throw userver::ugrpc::server::ErrorWithStatus(
+                    grpc::Status(
+                        grpc::StatusCode::PERMISSION_DENIED,
+                        "Only the author or an admin can delete the task"
+                    )
+                );
+            }
+        }
+
+        _pgCluster->Execute(
+            userver::storages::postgres::ClusterHostType::kMaster,
+            kDeleteTask,
+            taskId
+        );
+
+        _taskCache.InvalidateAsync(userver::cache::UpdateType::kFull);
+
+        aquarium::api::DeleteTaskResponse response;
+        response.set_success(true);
+        return response;
+    } catch (const userver::ugrpc::server::ErrorWithStatus&) {
+        throw;
+    } catch (const std::exception& ex) {
+        LOG_ERROR() << "DeleteTask error: " << ex.what();
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::INTERNAL,
+                std::string("DB/Internal error: ") + ex.what()
+            )
+        );
+    }
+}
 } // namespace Aquarium::Tasks

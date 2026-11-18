@@ -59,6 +59,12 @@ components_manager:
         auth-service-middleware:
           enabled: true
 
+    task-store-service:
+      task-processor: main-task-processor
+      middlewares:
+        auth-service-middleware:
+          enabled: true
+
     postgres-db:
       dbconnection: $pg_connection
       blocking_task_processor: fs-task-processor
@@ -68,11 +74,13 @@ components_manager:
     auth-pg-cache:
       pgcomponent: postgres-db
       update-interval: 10s
+      update-correction: 0s
       chunk-size: 0
 
     tasks-pg-cache:
       pgcomponent: postgres-db
       update-interval: 10s
+      update-correction: 0s
       chunk-size: 0
 
     dns-client:
