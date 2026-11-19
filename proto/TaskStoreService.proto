@@ -10,6 +10,8 @@ enum TaskStatus {
   ACTIVE = 2;
   COMPLETE = 3;
   ARCHIVE = 4;
+  IN_REVIEW = 5;
+  VERIFIED = 6;
 }
 
 message Task {

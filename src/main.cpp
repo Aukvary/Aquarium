@@ -26,7 +26,7 @@ int main(int argc, char* argv[]) {
             .Append<Aquarium::Utils::UtilsServiceComponent>()
             .Append<Aquarium::Users::UserStoreClientComponent>()
             .Append<Aquarium::Users::UserStoreService>()
-            .Append<Aquarium::Users::AuthServiceMiddlewareComponent>()
+            .Append<Aquarium::Users::AuthenticationMiddlewareComponent>()
             .Append<Aquarium::Users::AuthCache>()
             .Append<Aquarium::Tasks::TaskStoreService>()
             .Append<Aquarium::Tasks::TaskCache>();

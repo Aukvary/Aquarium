@@ -37,16 +37,18 @@ Aquarium/
 │   └── Tasks.sql               # task_schema (tasks, task_workers, view, triggers)
 └── src/                        # Service implementations and domain logic
     ├── main.cpp                # Component list registration & DaemonMain entry point
+    ├── AccessControl.hpp       # AccessControl authorization rules (users & tasks)
     ├── Users.hpp               # User types, AuthCache policy, middleware declaration
     ├── Users/
     │   ├── UserStoreService.cpp# UserStore gRPC service implementation
-    │   └── Auth.cpp            # AuthServiceMiddleware & authentication checks
+    │   └── Auth.cpp            # AuthenticationMiddleware & authentication checks
     ├── TaskStore.hpp           # Task types, TaskCache policy, TaskStoreService declaration
     ├── Tasks/
     │   └── TaskService.cpp     # TaskStore gRPC service implementation
     ├── Utils.hpp               # UtilsService declaration & client wrappers
     └── Utils/
-        └── HealthService.cpp   # Health service implementation
+        ├── HealthService.cpp   # Health service implementation
+        └── AccessControl.cpp   # AccessControl permission checks implementation
 ```
 
 ---
@@ -61,7 +63,7 @@ Userver uses an inversion-of-control component system. All services, caches, and
 2. **`auth-pg-cache` & `tasks-pg-cache`** (`userver::components::PostgreCache`):
    - Periodically update in-memory cache snapshots from Postgres.
    - Support incremental invalidation (`InvalidateAsync(UpdateType::kIncremental)`).
-3. **`auth-service-middleware`** (`userver::ugrpc::server::MiddlewareFactoryComponentBase`):
+3. **`authentication-middleware`** (`userver::ugrpc::server::MiddlewareFactoryComponentBase`):
    - Attached to gRPC server pipeline.
    - Extracts metadata headers (`authorization: Bearer <key>`, `invite-key: Invite <key>`).
    - Validates tokens against `AuthCache` and stores the authenticated `UserDbInfo` in the request's `StorageContext`.

@@ -11,8 +11,10 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_hash.hpp>
 #include <cstdint>
+#include <functional>
 #include <google/protobuf/stubs/port.h>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -42,6 +44,15 @@ struct UserDbInfo {
     bool active;
     bool admin;
 };
+
+const UserDbInfo* FindUserById(
+    const std::unordered_map<
+        std::string,
+        UserDbInfo,
+        std::hash<std::string>,
+        userver::crypto::algorithm::StringsEqualConstTimeComparator>& users,
+    std::int64_t id
+);
 
 inline const userver::utils::
     AnyStorageDataTag<userver::ugrpc::server::StorageContext, UserDbInfo>
@@ -126,67 +137,69 @@ public:
     using Base::GetClient;
 };
 
-class AuthServiceMiddleware final
+class AuthenticationMiddleware final
     : public userver::ugrpc::server::MiddlewareBase {
+public:
+    using UserLookup = std::function<std::optional<UserDbInfo>(std::string_view)>;
+
 private:
     const std::string _inviteKey;
-    const AuthCache& _authCache;
+    const AuthCache* _authCache{nullptr};
     const std::string _internalKey;
+    UserLookup _userLookup{};
 
 public:
     static inline const auto kDependency =
         userver::middlewares::MiddlewareDependencyBuilder()
             .InGroup<userver::middlewares::groups::Auth>();
 
-    explicit AuthServiceMiddleware(
+    explicit AuthenticationMiddleware(
         const std::string_view inviteKey,
         const AuthCache& authCache,
         const std::string_view internalKey
     )
-        : _inviteKey(inviteKey), _authCache(authCache),
+        : _inviteKey(inviteKey), _authCache(&authCache),
           _internalKey(internalKey) {}
+
+    explicit AuthenticationMiddleware(
+        const std::string_view inviteKey,
+        UserLookup userLookup,
+        const std::string_view internalKey
+    )
+        : _inviteKey(inviteKey), _authCache(nullptr),
+          _internalKey(internalKey), _userLookup(std::move(userLookup)) {}
 
     void OnCallStart(
         userver::ugrpc::server::MiddlewareCallContext& ctx
     ) const override;
 
-    bool CheckAddUser(
-        userver::ugrpc::server::MiddlewareCallContext& ctx,
-        std::string_view callName,
-        const auto& metadata
-    ) const;
-    bool CheckUserAuth(
+    void CheckAddUser(
         userver::ugrpc::server::MiddlewareCallContext& ctx,
         const auto& metadata
     ) const;
-
-    void PostRecvMessage(
-        userver::ugrpc::server::MiddlewareCallContext& context,
-        google::protobuf::Message& request
-    ) const override;
-
-    bool CheckSelfOrAdmin(
-        std::string_view callName,
-        const UserDbInfo& user,
-        std::int64_t id
+    void CheckUserAuth(
+        userver::ugrpc::server::MiddlewareCallContext& ctx,
+        const auto& metadata
     ) const;
 };
 
-class AuthServiceMiddlewareComponent
+using AuthServiceMiddleware = AuthenticationMiddleware;
+
+class AuthenticationMiddlewareComponent
     : public userver::ugrpc::server::MiddlewareFactoryComponentBase {
 
     using MiddlewareBase = userver::ugrpc::server::MiddlewareBase;
     using Base = userver::ugrpc::server::MiddlewareFactoryComponentBase;
 
 private:
-    std::shared_ptr<const AuthServiceMiddleware> _middleware;
+    std::shared_ptr<const AuthenticationMiddleware> _middleware;
 
 public:
-    static constexpr std::string_view kName = "auth-service-middleware";
+    static constexpr std::string_view kName = "authentication-middleware";
     static userver::yaml_config::Schema GetStaticConfigSchema() {
         return userver::yaml_config::MergeSchemas<Base>(R"(
 type: object
-description: Auth service middleware component
+description: Authentication middleware component
 additionalProperties: false
 properties:
     invite-key:
@@ -194,16 +207,16 @@ properties:
         description: Secret invite key
     internal-key:
         type: string
-        description: Secret invite key
+        description: Secret internal key
 )");
     }
 
-    AuthServiceMiddlewareComponent(
+    AuthenticationMiddlewareComponent(
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     )
         : Base{cfg, ctx}, _middleware{
-                              std::make_shared<const AuthServiceMiddleware>(
+                              std::make_shared<const AuthenticationMiddleware>(
                                   cfg["invite-key"].As<std::string>(),
                                   ctx.FindComponent<AuthCache>(),
                                   cfg["internal-key"].As<std::string>()
@@ -219,5 +232,7 @@ properties:
         return _middleware;
     }
 };
+
+using AuthServiceMiddlewareComponent = AuthenticationMiddlewareComponent;
 
 } // namespace Aquarium::Users

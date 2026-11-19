@@ -1,4 +1,5 @@
 #include "./Users.hpp"
+#include "../AccessControl.hpp"
 #include "userver/cache/update_type.hpp"
 #include "userver/storages/postgres/cluster_types.hpp"
 
@@ -22,6 +23,25 @@
 #include <utility>
 
 namespace Aquarium::Users {
+const UserDbInfo* FindUserById(
+    const std::unordered_map<
+        std::string,
+        UserDbInfo,
+        std::hash<std::string>,
+        userver::crypto::algorithm::StringsEqualConstTimeComparator>& users,
+    std::int64_t id
+) {
+    auto it = std::find_if(
+        users.begin(), users.end(), [id](const auto& pair) {
+            return pair.second.id == id;
+        }
+    );
+    if (it == users.end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
 UserStoreService::UserStoreService(
     const userver::components::ComponentConfig& cfg,
     const userver::components::ComponentContext& ctx
@@ -44,7 +64,6 @@ UserStoreService::GetAllResult UserStoreService::GetAll(
             auto* user = response.add_users();
             user->set_id(user_info.id);
             user->set_name(user_info.name);
-            user->set_key(user_info.key);
         }
 
         return response;
@@ -62,26 +81,18 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
     try {
         auto snapshot = _authCache.Get();
 
-        const auto target_id = request.id();
-        auto it = std::find_if(
-            snapshot->begin(), snapshot->end(), [target_id](const auto& pair) {
-                return pair.second.id == target_id;
-            }
-        );
+        const auto* user_info = FindUserById(*snapshot, request.id());
 
-        if (it == snapshot->end()) {
+        if (!user_info) {
             throw userver::ugrpc::server::ErrorWithStatus(
                 grpc::Status(grpc::StatusCode::NOT_FOUND, "Undefined user")
             );
         }
 
-        const auto& user_info = it->second;
-
         aquarium::api::GetUserResponse response;
         auto* user = response.mutable_user();
-        user->set_id(user_info.id);
-        user->set_name(user_info.name);
-        user->set_key(user_info.key);
+        user->set_id(user_info->id);
+        user->set_name(user_info->name);
 
         return response;
 
@@ -138,9 +149,19 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
 }
 
 UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
-    CallContext& /*ctx*/,
+    CallContext& ctx,
     UpdateUserRequest&& request
 ) {
+    const auto* user = ctx.GetStorageContext().GetOptional(kAuthUser);
+    if (!AccessControl::CanUpdateUser(user, request.id())) {
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::PERMISSION_DENIED,
+                "Only the user itself or an admin can call this method"
+            )
+        );
+    }
+
     static const userver::storages::postgres::Query kQuery{
         "UPDATE user_schema.tokens SET name = $2 WHERE id = $1 RETURNING id, "
         "name, key"
@@ -165,11 +186,10 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
         _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
         aquarium::api::UpdateUserResponse response;
-        auto* user = response.mutable_user();
+        auto* resp_user = response.mutable_user();
 
-        user->set_id(id);
-        user->set_name(std::move(name));
-        user->set_key(std::move(key));
+        resp_user->set_id(id);
+        resp_user->set_name(std::move(name));
 
         return response;
     } catch (const userver::ugrpc::server::ErrorWithStatus&) {
@@ -182,9 +202,19 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
 }
 
 UserStoreService::DeleteUserResult UserStoreService::DeleteUser(
-    CallContext& /*ctx*/,
+    CallContext& ctx,
     DeleteUserRequest&& request
 ) {
+    const auto* user = ctx.GetStorageContext().GetOptional(kAuthUser);
+    if (!AccessControl::CanDeleteUser(user, request.id())) {
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::PERMISSION_DENIED,
+                "Only the user itself or an admin can call this method"
+            )
+        );
+    }
+
     static const userver::storages::postgres::Query kQuery{
         "DELETE FROM user_schema.tokens WHERE id = $1"
     };

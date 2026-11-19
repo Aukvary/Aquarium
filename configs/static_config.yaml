@@ -37,11 +37,11 @@ components_manager:
       health-prefix: "aquarium"
       internal-key: $internal-key
       middlewares:
-        auth-service-middleware:
+        authentication-middleware:
           enabled: false
       task-processor: main-task-processor
 
-    auth-service-middleware:
+    authentication-middleware:
       internal-key: $internal-key
       invite-key: "secret_invite_key_value"
 
@@ -50,19 +50,19 @@ components_manager:
 
     grpc-server-middlewares-pipeline:
       middlewares:
-        auth-service-middleware:
+        authentication-middleware:
           enabled: true
 
     user-store-service:
       task-processor: main-task-processor
       middlewares:
-        auth-service-middleware:
+        authentication-middleware:
           enabled: true
 
     task-store-service:
       task-processor: main-task-processor
       middlewares:
-        auth-service-middleware:
+        authentication-middleware:
           enabled: true
 
     postgres-db:

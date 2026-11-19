@@ -60,6 +60,7 @@ userver_add_grpc_library(${PROJECT_NAME}-proto PROTOS UserStoreService.proto
 
 add_library(
   ${PROJECT_NAME}_objs src/Utils/HealthService.cpp
+                       src/Utils/AccessControl.cpp
                        src/Users/UserStoreService.cpp src/Users/Auth.cpp
                        src/Tasks/TaskService.cpp)
 
@@ -75,3 +76,25 @@ target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_link_libraries(
   ${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_objs ${PROJECT_NAME}-proto
                           userver::core userver::grpc userver::postgresql)
+
+# Unit & Coroutine Tests
+enable_testing()
+
+add_executable(
+  ${PROJECT_NAME}-unittest
+  tests/unittest/test_user_service.cpp
+  tests/unittest/test_task_service.cpp
+)
+
+target_include_directories(${PROJECT_NAME}-unittest PRIVATE src)
+target_link_libraries(
+  ${PROJECT_NAME}-unittest PRIVATE
+  ${PROJECT_NAME}_objs
+  ${PROJECT_NAME}-proto
+  userver::utest
+  userver::grpc-utest
+  userver::postgresql
+)
+
+add_google_tests(${PROJECT_NAME}-unittest)
+set_tests_properties(${PROJECT_NAME}-unittest PROPERTIES ENVIRONMENT "USERVER_ENABLE_STACK_USAGE_MONITOR=0")
