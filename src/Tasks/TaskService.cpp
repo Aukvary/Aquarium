@@ -1,7 +1,7 @@
 #include "./TaskStore.hpp"
 #include "../AccessControl.hpp"
 
-#include <userver/cache/update_type.hpp>
+#include <userver/engine/task/cancel.hpp>
 #include <userver/logging/log.hpp>
 #include <userver/storages/postgres/cluster.hpp>
 #include <userver/storages/postgres/exceptions.hpp>
@@ -63,6 +63,16 @@ void FillProtoTask(aquarium::api::Task *task, const TaskDbInfo &taskInfo) {
   }
 }
 
+void FillProtoComment(aquarium::api::Comment *comment,
+                      const CommentDbInfo &commentInfo) {
+  comment->set_id(commentInfo.Id);
+  comment->set_taskid(commentInfo.TaskId);
+  comment->set_authorid(commentInfo.AuthorId);
+  comment->set_content(commentInfo.Content);
+  comment->set_type(static_cast<aquarium::api::CommentType>(commentInfo.Type));
+  *comment->mutable_createdat() = ToProtoTimestamp(commentInfo.CreatedAt);
+}
+
 void ValidateCreateTaskRequest(
     const aquarium::api::CreateTaskRequest &request) {
   if (request.title().empty()) {
@@ -112,6 +122,28 @@ void ValidateTaskStatus(aquarium::api::TaskStatus status) {
   }
 }
 
+void ValidateAddCommentRequest(
+    const aquarium::api::AddCommentRequest &request) {
+  ValidateTaskId(request.taskid());
+  if (request.content().empty()) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "Comment content cannot be empty"));
+  }
+  if (!aquarium::api::CommentType_IsValid(request.type())) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "Invalid comment type"));
+  }
+}
+
+void ValidateRejectTaskRequest(
+    const aquarium::api::RejectTaskRequest &request) {
+  ValidateTaskId(request.taskid());
+  if (request.reason().empty()) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "Rejection reason cannot be empty"));
+  }
+}
+
 bool CheckTaskUpdatePermission(const Users::UserDbInfo *user,
                                const TaskDbInfo &taskInfo) {
   return AccessControl::CanUpdateTask(user, taskInfo);
@@ -131,6 +163,21 @@ bool CheckTaskWorkerPermission(const Users::UserDbInfo *user,
 bool CheckTaskDeletePermission(const Users::UserDbInfo *user,
                                std::int64_t authorId) {
   return AccessControl::CanDeleteTask(user, authorId);
+}
+
+bool CheckRejectTaskPermission(const Users::UserDbInfo *user,
+                               const TaskDbInfo &taskInfo) {
+  return AccessControl::CanRejectTask(user, taskInfo);
+}
+
+bool CheckAddCommentPermission(const Users::UserDbInfo *user,
+                               const TaskDbInfo &taskInfo) {
+  return AccessControl::CanAddComment(user, taskInfo);
+}
+
+bool CheckViewCommentsPermission(const Users::UserDbInfo *user,
+                                 const TaskDbInfo &taskInfo) {
+  return AccessControl::CanViewComments(user, taskInfo);
 }
 
 std::vector<TaskDbInfo>
@@ -171,6 +218,41 @@ const userver::storages::postgres::Query kSelectTaskFromView{
     "FROM task_schema.task_cache_view WHERE id = $1",
     userver::storages::postgres::Query::Name{"select_task_from_view"}};
 
+const userver::storages::postgres::Query kCountTasks{
+    "SELECT COUNT(*)::BIGINT "
+    "FROM task_schema.tasks t "
+    "WHERE ($1::SMALLINT IS NULL OR t.status = $1) "
+    "  AND ($2::BIGINT IS NULL OR t.author_id = $2) "
+    "  AND ($3::BIGINT IS NULL OR EXISTS ( "
+    "      SELECT 1 FROM task_schema.task_workers tw "
+    "      WHERE tw.task_id = t.id AND tw.worker_id = $3 "
+    "  ))",
+    userver::storages::postgres::Query::Name{"count_tasks"}};
+
+const userver::storages::postgres::Query kSelectTasks{
+    "SELECT t.id, t.title, t.description, t.author_id, "
+    "       COALESCE(ARRAY_AGG(tw.worker_id) FILTER (WHERE tw.worker_id IS NOT NULL), ARRAY[]::BIGINT[]) AS workers, "
+    "       COALESCE(t.checker_id, 0) AS checker_id, "
+    "       t.status, t.created_at, t.updated_at, t.due_date "
+    "FROM ( "
+    "    SELECT t.id, t.title, t.description, t.author_id, t.checker_id, "
+    "           t.status, t.created_at, t.updated_at, t.due_date "
+    "    FROM task_schema.tasks t "
+    "    WHERE ($1::SMALLINT IS NULL OR t.status = $1) "
+    "      AND ($2::BIGINT IS NULL OR t.author_id = $2) "
+    "      AND ($3::BIGINT IS NULL OR EXISTS ( "
+    "          SELECT 1 FROM task_schema.task_workers tw "
+    "          WHERE tw.task_id = t.id AND tw.worker_id = $3 "
+    "      )) "
+    "    ORDER BY t.created_at DESC, t.id DESC "
+    "    LIMIT $4 OFFSET $5 "
+    ") t "
+    "LEFT JOIN task_schema.task_workers tw ON t.id = tw.task_id "
+    "GROUP BY t.id, t.title, t.description, t.author_id, t.checker_id, "
+    "         t.status, t.created_at, t.updated_at, t.due_date "
+    "ORDER BY t.created_at DESC, t.id DESC",
+    userver::storages::postgres::Query::Name{"select_tasks"}};
+
 } // namespace
 
 TaskStoreService::TaskStoreService(
@@ -180,7 +262,15 @@ TaskStoreService::TaskStoreService(
       _pgCluster(ctx.FindComponent<userver::components::Postgres>("postgres-db")
                      .GetCluster()),
       _authCache(ctx.FindComponent<Users::AuthCache>()),
-      _taskCache(ctx.FindComponent<TaskCache>()) {}
+      _eventChannel("task_events") {}
+
+void TaskStoreService::PublishEvent(aquarium::api::TaskEvent event) {
+  try {
+    _eventChannel.SendEvent(event);
+  } catch (const std::exception &ex) {
+    LOG_WARNING() << "Failed to publish task event: " << ex.what();
+  }
+}
 
 TaskStoreService::CreateTaskResult
 TaskStoreService::CreateTask(CallContext &ctx,
@@ -260,10 +350,18 @@ TaskStoreService::CreateTask(CallContext &ctx,
         userver::storages::postgres::kRowTag);
 
     transaction.Commit();
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     aquarium::api::CreateTaskResponse response;
     FillProtoTask(response.mutable_task(), createdTaskInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::TASK_CREATED);
+    event.set_taskid(createdTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(createdTaskInfo.CreatedAt);
+    PublishEvent(std::move(event));
+
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -286,16 +384,20 @@ TaskStoreService::GetTask(CallContext & /*ctx*/,
     ValidateTaskId(request.id());
     const auto id = request.id();
 
-    auto snapshot = _taskCache.Get();
-    auto it = snapshot->find(id);
+    auto res = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kSlave,
+        kSelectTaskFromView, id);
 
-    if (it == snapshot->end()) {
+    if (res.IsEmpty()) {
       throw userver::ugrpc::server::ErrorWithStatus(
           grpc::Status(grpc::StatusCode::NOT_FOUND, "Task not found"));
     }
 
+    auto taskInfo =
+        res.AsSingleRow<TaskDbInfo>(userver::storages::postgres::kRowTag);
+
     aquarium::api::GetTaskResponse response;
-    FillProtoTask(response.mutable_task(), it->second);
+    FillProtoTask(response.mutable_task(), taskInfo);
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -310,35 +412,59 @@ TaskStoreService::GetTasksResult
 TaskStoreService::GetTasks(CallContext & /*ctx*/,
                            aquarium::api::GetTasksRequest &&request) {
   try {
-    auto snapshot = _taskCache.Get();
-
-    std::vector<TaskDbInfo> allTasks;
-    allTasks.reserve(snapshot->size());
-    for (const auto &[id, taskInfo] : *snapshot) {
-      allTasks.push_back(taskInfo);
-    }
-
-    std::optional<aquarium::api::TaskStatus> statusFilter;
+    std::optional<std::int16_t> statusFilter;
     if (request.has_status()) {
-      statusFilter = request.status();
+      ValidateTaskStatus(request.status());
+      statusFilter = static_cast<std::int16_t>(request.status());
     }
 
     std::optional<std::int64_t> authorFilter;
     if (request.has_authorid()) {
+      if (request.authorid() <= 0) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::INVALID_ARGUMENT, "Invalid author id"));
+      }
       authorFilter = request.authorid();
     }
 
     std::optional<std::int64_t> workerFilter;
     if (request.has_workerid()) {
+      ValidateWorkerId(request.workerid());
       workerFilter = request.workerid();
     }
 
-    auto matchedTasks =
-        FilterTasks(allTasks, statusFilter, authorFilter, workerFilter);
+    std::int32_t limit = request.limit();
+    if (limit <= 0) {
+      limit = 50;
+    } else if (limit > 100) {
+      limit = 100;
+    }
+
+    std::int32_t offset = request.offset();
+    if (offset < 0) {
+      offset = 0;
+    }
+
+    auto countRes = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kSlave,
+        kCountTasks, statusFilter, authorFilter, workerFilter);
+    const auto totalCount = countRes.AsSingleRow<std::int64_t>();
 
     aquarium::api::GetTasksResponse response;
-    for (const auto &taskInfo : matchedTasks) {
-      FillProtoTask(response.add_tasks(), taskInfo);
+    response.set_totalcount(totalCount);
+
+    if (totalCount > 0 && offset < totalCount) {
+      auto tasksRes = _pgCluster->Execute(
+          userver::storages::postgres::ClusterHostType::kSlave,
+          kSelectTasks, statusFilter, authorFilter, workerFilter,
+          static_cast<std::int64_t>(limit), static_cast<std::int64_t>(offset));
+
+      auto matchedTasks = tasksRes.AsContainer<std::vector<TaskDbInfo>>(
+          userver::storages::postgres::kRowTag);
+
+      for (const auto &taskInfo : matchedTasks) {
+        FillProtoTask(response.add_tasks(), taskInfo);
+      }
     }
 
     return response;
@@ -424,10 +550,18 @@ TaskStoreService::UpdateTask(CallContext &ctx,
         userver::storages::postgres::kRowTag);
 
     transaction.Commit();
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     aquarium::api::UpdateTaskResponse response;
     FillProtoTask(response.mutable_task(), updatedTaskInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::TASK_UPDATED);
+    event.set_taskid(updatedTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(updatedTaskInfo.UpdatedAt);
+    PublishEvent(std::move(event));
+
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -495,10 +629,18 @@ TaskStoreService::UpdateTaskStatusResult TaskStoreService::UpdateTaskStatus(
         userver::storages::postgres::kRowTag);
 
     transaction.Commit();
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     aquarium::api::UpdateTaskStatusResponse response;
     FillProtoTask(response.mutable_task(), updatedTaskInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::STATUS_CHANGED);
+    event.set_taskid(updatedTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(updatedTaskInfo.UpdatedAt);
+    PublishEvent(std::move(event));
+
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -553,10 +695,18 @@ TaskStoreService::AssignWorker(CallContext &ctx,
         userver::storages::postgres::kRowTag);
 
     transaction.Commit();
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     aquarium::api::AssignWorkerResponse response;
     FillProtoTask(response.mutable_task(), updatedTaskInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::WORKER_ASSIGNED);
+    event.set_taskid(updatedTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(updatedTaskInfo.UpdatedAt);
+    PublishEvent(std::move(event));
+
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -614,10 +764,18 @@ TaskStoreService::RemoveWorker(CallContext &ctx,
         userver::storages::postgres::kRowTag);
 
     transaction.Commit();
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
 
     aquarium::api::RemoveWorkerResponse response;
     FillProtoTask(response.mutable_task(), updatedTaskInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::WORKER_REMOVED);
+    event.set_taskid(updatedTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(updatedTaskInfo.UpdatedAt);
+    PublishEvent(std::move(event));
+
     return response;
   } catch (const userver::ugrpc::server::ErrorWithStatus &) {
     throw;
@@ -663,7 +821,13 @@ TaskStoreService::DeleteTask(CallContext &ctx,
     _pgCluster->Execute(userver::storages::postgres::ClusterHostType::kMaster,
                         kDeleteTask, taskId);
 
-    _taskCache.InvalidateAsync(userver::cache::UpdateType::kFull);
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::TASK_DELETED);
+    event.set_taskid(taskId);
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(
+        userver::storages::postgres::TimePointTz{std::chrono::system_clock::now()});
+    PublishEvent(std::move(event));
 
     aquarium::api::DeleteTaskResponse response;
     response.set_success(true);
@@ -675,6 +839,270 @@ TaskStoreService::DeleteTask(CallContext &ctx,
     throw userver::ugrpc::server::ErrorWithStatus(
         grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error"));
   }
+}
+
+TaskStoreService::AddCommentResult
+TaskStoreService::AddComment(CallContext &ctx,
+                             aquarium::api::AddCommentRequest &&request) {
+  static const userver::storages::postgres::Query kInsertComment{
+      "INSERT INTO task_schema.task_comments (task_id, author_id, content, comment_type) "
+      "VALUES ($1, $2, $3, $4) "
+      "RETURNING id, task_id, author_id, content, comment_type, created_at",
+      userver::storages::postgres::Query::Name{"insert_task_comment"}};
+
+  try {
+    ValidateAddCommentRequest(request);
+    const auto taskId = request.taskid();
+
+    const auto *user = ctx.GetStorageContext().GetOptional(Users::kAuthUser);
+
+    auto checkRes = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kMaster,
+        kSelectTaskFromView, taskId);
+    if (checkRes.IsEmpty()) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::NOT_FOUND, "Task not found"));
+    }
+
+    auto taskInfo =
+        checkRes.AsSingleRow<TaskDbInfo>(userver::storages::postgres::kRowTag);
+
+    if (!CheckAddCommentPermission(user, taskInfo)) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                       "Only task participants or an admin can add comments"));
+    }
+
+    std::int64_t authorId = user ? user->id : 0;
+    if (request.has_authorid() && request.authorid() != 0) {
+      if (user && request.authorid() != user->id && !user->admin) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::PERMISSION_DENIED,
+            "Cannot add comment on behalf of another user"));
+      }
+      authorId = request.authorid();
+    }
+
+    auto commentRes = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kMaster,
+        kInsertComment, taskId, authorId, request.content(),
+        static_cast<std::int16_t>(request.type()));
+
+    auto commentInfo = commentRes.AsSingleRow<CommentDbInfo>(
+        userver::storages::postgres::kRowTag);
+
+    aquarium::api::AddCommentResponse response;
+    FillProtoComment(response.mutable_comment(), commentInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::COMMENT_ADDED);
+    event.set_taskid(commentInfo.TaskId);
+    *event.mutable_comment() = response.comment();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(commentInfo.CreatedAt);
+    PublishEvent(std::move(event));
+
+    return response;
+  } catch (const userver::ugrpc::server::ErrorWithStatus &) {
+    throw;
+  } catch (const userver::storages::postgres::ForeignKeyViolation &ex) {
+    LOG_WARNING() << "AddComment foreign key error: " << ex.what();
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::NOT_FOUND, "Referenced entity not found"));
+  } catch (const std::exception &ex) {
+    LOG_ERROR() << "AddComment error: " << ex.what();
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error"));
+  }
+}
+
+TaskStoreService::GetCommentsResult
+TaskStoreService::GetComments(CallContext &ctx,
+                              aquarium::api::GetCommentsRequest &&request) {
+  static const userver::storages::postgres::Query kSelectCommentsByTaskId{
+      "SELECT id, task_id, author_id, content, comment_type, created_at "
+      "FROM task_schema.task_comments "
+      "WHERE task_id = $1 "
+      "ORDER BY created_at ASC, id ASC",
+      userver::storages::postgres::Query::Name{"select_comments_by_task_id"}};
+
+  try {
+    ValidateTaskId(request.taskid());
+    const auto taskId = request.taskid();
+
+    const auto *user = ctx.GetStorageContext().GetOptional(Users::kAuthUser);
+
+    auto checkRes = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kMaster,
+        kSelectTaskFromView, taskId);
+    if (checkRes.IsEmpty()) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::NOT_FOUND, "Task not found"));
+    }
+
+    auto taskInfo =
+        checkRes.AsSingleRow<TaskDbInfo>(userver::storages::postgres::kRowTag);
+
+    if (!CheckViewCommentsPermission(user, taskInfo)) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                       "Access denied to task comments"));
+    }
+
+    auto commentsRes = _pgCluster->Execute(
+        userver::storages::postgres::ClusterHostType::kMaster,
+        kSelectCommentsByTaskId, taskId);
+
+    auto comments = commentsRes.AsSetOf<CommentDbInfo>(
+        userver::storages::postgres::kRowTag);
+
+    aquarium::api::GetCommentsResponse response;
+    for (const auto &commentInfo : comments) {
+      FillProtoComment(response.add_comments(), commentInfo);
+    }
+    return response;
+  } catch (const userver::ugrpc::server::ErrorWithStatus &) {
+    throw;
+  } catch (const std::exception &ex) {
+    LOG_ERROR() << "GetComments error: " << ex.what();
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error"));
+  }
+}
+
+TaskStoreService::RejectTaskResult
+TaskStoreService::RejectTask(CallContext &ctx,
+                             aquarium::api::RejectTaskRequest &&request) {
+  static const userver::storages::postgres::Query kUpdateTaskStatus{
+      "UPDATE task_schema.tasks SET status = $2 WHERE id = $1",
+      userver::storages::postgres::Query::Name{"update_task_status_on_reject"}};
+
+  static const userver::storages::postgres::Query kInsertComment{
+      "INSERT INTO task_schema.task_comments (task_id, author_id, content, comment_type) "
+      "VALUES ($1, $2, $3, $4) "
+      "RETURNING id, task_id, author_id, content, comment_type, created_at",
+      userver::storages::postgres::Query::Name{"insert_task_comment"}};
+
+  try {
+    ValidateRejectTaskRequest(request);
+    const auto taskId = request.taskid();
+
+    const auto *user = ctx.GetStorageContext().GetOptional(Users::kAuthUser);
+
+    auto transaction =
+        _pgCluster->Begin("reject_task_trx",
+                          userver::storages::postgres::ClusterHostType::kMaster,
+                          userver::storages::postgres::TransactionOptions{});
+
+    auto checkRes = transaction.Execute(kSelectTaskFromView, taskId);
+    if (checkRes.IsEmpty()) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::NOT_FOUND, "Task not found"));
+    }
+
+    auto taskInfo =
+        checkRes.AsSingleRow<TaskDbInfo>(userver::storages::postgres::kRowTag);
+
+    if (!CheckRejectTaskPermission(user, taskInfo)) {
+      throw userver::ugrpc::server::ErrorWithStatus(
+          grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
+                       "Only the checker, author or an admin can reject the task"));
+    }
+
+    auto currentStatus = static_cast<aquarium::api::TaskStatus>(taskInfo.status);
+    if (currentStatus != aquarium::api::TaskStatus::COMPLETE &&
+        currentStatus != aquarium::api::TaskStatus::IN_REVIEW) {
+      throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "Task can only be rejected from COMPLETE or IN_REVIEW status"));
+    }
+
+    transaction.Execute(kUpdateTaskStatus, taskId,
+                        static_cast<std::int16_t>(aquarium::api::TaskStatus::ACTIVE));
+
+    const auto authorId = user ? user->id : 0;
+    auto commentRes = transaction.Execute(
+        kInsertComment, taskId, authorId, request.reason(),
+        static_cast<std::int16_t>(aquarium::api::CommentType::COMMENT_REVISION_REASON));
+
+    auto commentInfo = commentRes.AsSingleRow<CommentDbInfo>(
+        userver::storages::postgres::kRowTag);
+
+    auto updatedRes = transaction.Execute(kSelectTaskFromView, taskId);
+    auto updatedTaskInfo = updatedRes.AsSingleRow<TaskDbInfo>(
+        userver::storages::postgres::kRowTag);
+
+    transaction.Commit();
+
+    aquarium::api::RejectTaskResponse response;
+    FillProtoTask(response.mutable_task(), updatedTaskInfo);
+    FillProtoComment(response.mutable_comment(), commentInfo);
+
+    aquarium::api::TaskEvent event;
+    event.set_type(aquarium::api::TaskEvent::TASK_REJECTED);
+    event.set_taskid(updatedTaskInfo.Id);
+    *event.mutable_task() = response.task();
+    *event.mutable_comment() = response.comment();
+    event.set_actoruserid(user ? user->id : 0);
+    *event.mutable_timestamp() = ToProtoTimestamp(commentInfo.CreatedAt);
+    PublishEvent(std::move(event));
+
+    return response;
+  } catch (const userver::ugrpc::server::ErrorWithStatus &) {
+    throw;
+  } catch (const std::exception &ex) {
+    LOG_ERROR() << "RejectTask error: " << ex.what();
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error"));
+  }
+}
+
+TaskStoreService::SubscribeEventsResult
+TaskStoreService::SubscribeEvents(CallContext &ctx,
+                                  aquarium::api::SubscribeEventsRequest && /*request*/,
+                                  SubscribeEventsWriter &writer) {
+  const auto *user = ctx.GetStorageContext().GetOptional(Users::kAuthUser);
+  if (!user) {
+    throw userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::UNAUTHENTICATED, "Authentication required"));
+  }
+
+  using EventQueue =
+      userver::concurrent::NonFifoMpscQueue<aquarium::api::TaskEvent>;
+  auto queue = EventQueue::Create(1000);
+  auto producer = queue->GetProducer();
+  auto consumer = queue->GetConsumer();
+
+  struct SubscriberListener {
+    EventQueue::Producer producer;
+
+    void OnEvent(const aquarium::api::TaskEvent &event) {
+      (void)producer.PushNoblock(aquarium::api::TaskEvent(event));
+    }
+  };
+
+  auto listener = std::make_unique<SubscriberListener>(std::move(producer));
+  auto sub = _eventChannel.AddListener(listener.get(), "TaskEventsSubscriber",
+                                       &SubscriberListener::OnEvent);
+
+  while (!ctx.GetServerContext().IsCancelled() &&
+         !userver::engine::current_task::ShouldCancel()) {
+    aquarium::api::TaskEvent event;
+    if (consumer.Pop(event, userver::engine::Deadline::FromDuration(
+                                std::chrono::milliseconds(200)))) {
+      try {
+        writer.Write(std::move(event));
+      } catch (const userver::ugrpc::server::RpcError &) {
+        break;
+      } catch (const std::exception &ex) {
+        LOG_WARNING() << "Failed to write TaskEvent: " << ex.what();
+        break;
+      }
+    }
+  }
+
+  sub.Unsubscribe();
+  return grpc::Status::OK;
 }
 
 } // namespace Aquarium::Tasks

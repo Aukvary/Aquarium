@@ -28,7 +28,6 @@ int main(int argc, char* argv[]) {
             .Append<Aquarium::Users::UserStoreService>()
             .Append<Aquarium::Users::AuthenticationMiddlewareComponent>()
             .Append<Aquarium::Users::AuthCache>()
-            .Append<Aquarium::Tasks::TaskStoreService>()
-            .Append<Aquarium::Tasks::TaskCache>();
+            .Append<Aquarium::Tasks::TaskStoreService>();
     return utils::DaemonMain(argc, argv, component_list);
 }

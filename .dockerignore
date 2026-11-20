@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+bin/
+lib/
+*.o
+*.a
+*.so
+
+# Cache and temporary directories
+.cache/
+.ccache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Git and tooling
+.git/
+.gitignore
+.dockerignore
+.vscode/
+.idea/
+.clangd/
+compile_commands.json
+
+# Environment and secrets
+.env
+.env.local
+*.log

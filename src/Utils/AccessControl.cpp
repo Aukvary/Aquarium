@@ -120,4 +120,43 @@ bool CanDeleteTask(
     return user->admin || user->id == authorId;
 }
 
+bool CanRejectTask(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& taskInfo
+) {
+    if (!user) {
+        return false;
+    }
+    if (user->admin) {
+        return true;
+    }
+    if (taskInfo.CheckerId != 0) {
+        return user->id == taskInfo.CheckerId || user->id == taskInfo.AuthorId;
+    }
+    return user->id == taskInfo.AuthorId;
+}
+
+bool CanAddComment(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& taskInfo
+) {
+    if (!user) {
+        return false;
+    }
+    if (user->admin || user->id == taskInfo.AuthorId) {
+        return true;
+    }
+    if (taskInfo.CheckerId != 0 && user->id == taskInfo.CheckerId) {
+        return true;
+    }
+    return std::ranges::find(taskInfo.WorkerIds, user->id) != taskInfo.WorkerIds.end();
+}
+
+bool CanViewComments(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& /*taskInfo*/
+) {
+    return user != nullptr;
+}
+
 } // namespace Aquarium::AccessControl

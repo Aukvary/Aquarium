@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS task_schema.task_workers (
 
 CREATE INDEX IF NOT EXISTS idx_task_workers_worker_id ON task_schema.task_workers (worker_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON task_schema.tasks (updated_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON task_schema.tasks (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON task_schema.tasks (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_author_id ON task_schema.tasks (author_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_checker_id ON task_schema.tasks (checker_id);
 
 CREATE OR REPLACE VIEW task_schema.task_cache_view AS
 SELECT

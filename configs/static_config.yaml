@@ -43,10 +43,10 @@ components_manager:
 
     authentication-middleware:
       internal-key: $internal-key
-      invite-key: "secret_invite_key_value"
+      invite-key: $invite-key
 
     user-store-client:
-      endpoint: "127.0.0.1:8081"
+      endpoint: $user-store-client-endpoint
 
     grpc-server-middlewares-pipeline:
       middlewares:
@@ -72,12 +72,6 @@ components_manager:
       sync-start: true
 
     auth-pg-cache:
-      pgcomponent: postgres-db
-      update-interval: 10s
-      update-correction: 0s
-      chunk-size: 0
-
-    tasks-pg-cache:
       pgcomponent: postgres-db
       update-interval: 10s
       update-correction: 0s

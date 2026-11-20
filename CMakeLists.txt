@@ -46,12 +46,23 @@ set(USERVER_FEATURE_STACKTRACE
     OFF
     CACHE BOOL "" FORCE)
 
-include(FetchContent)
-FetchContent_Declare(
+find_package(
   userver
-  GIT_REPOSITORY https://github.com/userver-framework/userver.git
-  GIT_TAG v3.2)
-FetchContent_MakeAvailable(userver)
+  COMPONENTS core
+             grpc
+             postgresql
+             utest
+             grpc-utest
+  QUIET)
+
+if(NOT userver_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    userver
+    GIT_REPOSITORY https://github.com/userver-framework/userver.git
+    GIT_TAG v3.2)
+  FetchContent_MakeAvailable(userver)
+endif()
 
 userver_setup_environment()
 

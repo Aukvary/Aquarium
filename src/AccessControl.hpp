@@ -47,4 +47,18 @@ bool CanDeleteTask(
     std::int64_t authorId
 );
 
+// Comment & Review permissions
+bool CanRejectTask(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& taskInfo
+);
+bool CanAddComment(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& taskInfo
+);
+bool CanViewComments(
+    const Users::UserDbInfo* user,
+    const Tasks::TaskDbInfo& taskInfo
+);
+
 } // namespace Aquarium::AccessControl

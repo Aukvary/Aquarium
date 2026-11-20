@@ -1,33 +1,51 @@
 name: aquarium
 
 services:
-  app:
-    build: ./services/api_bus
-    depends_on:
-      - db
-    volumes:
-      - ./services/api_bus:/app
-    environment:
-      - CHOKIDAR_USEPOLLING=true
-    env_file:
-      - .env
-    ports:
-      - '127.0.0.1:8000:8000'
-      - '127.0.0.1:8001:8001'
-
   db:
-    image: pgvector/pgvector:pg16
-    container_name: data_base
+    image: postgres:16-alpine
+    container_name: aquarium-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-aquarium}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./sql:/sql:ro
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-aquarium}"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aquarium-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
-    env_file:
-      - .env
+      USERVER_ENABLE_STACK_USAGE_MONITOR: "0"
+      PG_CONNECTION: "postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-aquarium}"
+      INTERNAL_KEY: "${INTERNAL_KEY:-zxc}"
+      INVITE_KEY: "${INVITE_KEY:-secret_invite_key_value}"
+      USER_STORE_CLIENT_ENDPOINT: "127.0.0.1:8081"
     ports:
-      - '127.0.0.1:5432:5432'
+      - "${GRPC_PORT:-8081}:8081"
+      - "${HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:
