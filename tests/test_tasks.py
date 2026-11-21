@@ -157,6 +157,110 @@ async def test_task_lifecycle_and_permissions(task_client, user_client):
     assert delete_resp.success is True
 
 
+async def test_task_no_checker_authorization_bypass_prevention(
+    task_client, user_client
+):
+    # 1. Setup users
+    add_author = await user_client.AddUser(
+        user_protos.AddUserRequest(name='AuthorTask1'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    author_id = add_author.user.id
+    author_key = add_author.user.key
+
+    add_stranger = await user_client.AddUser(
+        user_protos.AddUserRequest(name='StrangerTask1'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    stranger_id = add_stranger.user.id
+    stranger_key = add_stranger.user.key
+
+    add_worker = await user_client.AddUser(
+        user_protos.AddUserRequest(name='WorkerTask1'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    worker_id = add_worker.user.id
+    worker_key = add_worker.user.key
+
+    # 2. Author creates task without checker
+    create_resp = await task_client.CreateTask(
+        task_protos.CreateTaskRequest(
+            title='Task Without Checker',
+            description='Testing checkerId == 0 authorization fix',
+            authorId=author_id,
+            status=task_protos.TaskStatus.PLAN,
+        ),
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    task_id = create_resp.task.id
+    assert create_resp.task.checkerId == 0
+
+    # 3. Stranger attempts to update task title/description -> PERMISSION_DENIED
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(id=task_id, title='Hacked Title'),
+            metadata=[('authorization', f'Bearer {stranger_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    # 4. Stranger attempts to change/set checker -> PERMISSION_DENIED
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(id=task_id, checkerId=stranger_id),
+            metadata=[('authorization', f'Bearer {stranger_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    # 5. Stranger attempts to assign worker -> PERMISSION_DENIED
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.AssignWorker(
+            task_protos.AssignWorkerRequest(id=task_id, workerId=worker_id),
+            metadata=[('authorization', f'Bearer {stranger_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    # 6. Author assigns worker -> OK
+    assign_resp = await task_client.AssignWorker(
+        task_protos.AssignWorkerRequest(id=task_id, workerId=worker_id),
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    assert worker_id in assign_resp.task.workerIds
+
+    # 7. Stranger attempts to remove worker -> PERMISSION_DENIED
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.RemoveWorker(
+            task_protos.RemoveWorkerRequest(id=task_id, workerId=worker_id),
+            metadata=[('authorization', f'Bearer {stranger_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    # 8. Stranger attempts to advance task status -> PERMISSION_DENIED
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTaskStatus(
+            task_protos.UpdateTaskStatusRequest(
+                id=task_id, status=task_protos.TaskStatus.ACTIVE
+            ),
+            metadata=[('authorization', f'Bearer {stranger_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.PERMISSION_DENIED
+
+    # 9. Assigned worker can advance task to ACTIVE -> OK
+    worker_status_resp = await task_client.UpdateTaskStatus(
+        task_protos.UpdateTaskStatusRequest(
+            id=task_id, status=task_protos.TaskStatus.ACTIVE
+        ),
+        metadata=[('authorization', f'Bearer {worker_key}')],
+    )
+    assert worker_status_resp.task.status == task_protos.TaskStatus.ACTIVE
+
+    # 10. Author can change/set checker -> OK
+    update_checker_resp = await task_client.UpdateTask(
+        task_protos.UpdateTaskRequest(id=task_id, checkerId=stranger_id),
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    assert update_checker_resp.task.checkerId == stranger_id
+
+
 async def test_comments_and_rejection_flow(task_client, user_client):
     # Setup users: author Alice, checker Bob, worker Charlie, stranger Dave
     add_author = await user_client.AddUser(
@@ -436,5 +540,255 @@ async def test_subscribe_events_streaming(task_client, user_client):
 
     # 4. Cancel stream
     stream.cancel()
+
+
+async def test_soft_deleted_user_with_tasks_and_assignment_prevention(task_client, user_client):
+    admin_token = 'test_internal_key_minimum_32_characters_long_12345'
+
+    # 1. Create Author, Worker, and Checker
+    resp_author = await user_client.AddUser(
+        user_protos.AddUserRequest(name='TaskSoftAuthor'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    author_id = resp_author.user.id
+    author_key = resp_author.user.key
+
+    resp_worker = await user_client.AddUser(
+        user_protos.AddUserRequest(name='TaskSoftWorker'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    worker_id = resp_worker.user.id
+
+    resp_checker = await user_client.AddUser(
+        user_protos.AddUserRequest(name='TaskSoftChecker'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    checker_id = resp_checker.user.id
+
+    # 2. Create task referencing Worker and Checker
+    create_req = task_protos.CreateTaskRequest(
+        title='Soft Delete Linked Task',
+        description='Task with linked worker and checker',
+        authorId=author_id,
+        workerIds=[worker_id],
+        checkerId=checker_id,
+        status=task_protos.TaskStatus.PLAN,
+    )
+    create_resp = await task_client.CreateTask(
+        create_req,
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    task_id = create_resp.task.id
+    assert task_id > 0
+
+    # 3. Soft-delete the worker and checker
+    # Under hard delete, this would fail with ForeignKeyViolation (RESTRICT)
+    del_worker = await user_client.DeleteUser(
+        user_protos.DeleteUserRequest(id=worker_id),
+        metadata=[('authorization', f'Bearer {admin_token}')],
+    )
+    assert del_worker.success is True
+
+    del_checker = await user_client.DeleteUser(
+        user_protos.DeleteUserRequest(id=checker_id),
+        metadata=[('authorization', f'Bearer {admin_token}')],
+    )
+    assert del_checker.success is True
+
+    # 4. Existing task remains intact
+    get_task_resp = await task_client.GetTask(
+        task_protos.GetTaskRequest(id=task_id),
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    assert get_task_resp.task.id == task_id
+
+    # 5. Attempting to assign inactive checker in CreateTask throws FAILED_PRECONDITION
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.CreateTask(
+            task_protos.CreateTaskRequest(
+                title='New Task with Inactive Checker',
+                description='Desc',
+                authorId=author_id,
+                checkerId=checker_id,
+                status=task_protos.TaskStatus.PLAN,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+    # 6. Attempting to assign inactive worker in CreateTask throws FAILED_PRECONDITION
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.CreateTask(
+            task_protos.CreateTaskRequest(
+                title='New Task with Inactive Worker',
+                description='Desc',
+                authorId=author_id,
+                workerIds=[worker_id],
+                status=task_protos.TaskStatus.PLAN,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+    # 7. Attempting to assign inactive checker in UpdateTask throws FAILED_PRECONDITION
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(
+                id=task_id,
+                checkerId=checker_id,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+    # 8. Attempting to assign inactive worker in AssignWorker throws FAILED_PRECONDITION
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.AssignWorker(
+            task_protos.AssignWorkerRequest(
+                id=task_id,
+                workerId=worker_id,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+
+
+async def test_task_and_comment_input_validation(task_client, user_client):
+    # Setup author and checker
+    resp_author = await user_client.AddUser(
+        user_protos.AddUserRequest(name='ValidationAuthor'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    author_id = resp_author.user.id
+    author_key = resp_author.user.key
+
+    resp_checker = await user_client.AddUser(
+        user_protos.AddUserRequest(name='ValidationChecker'),
+        metadata=[('invite-key', 'Invite secret_invite_key_value')],
+    )
+    checker_id = resp_checker.user.id
+    checker_key = resp_checker.user.key
+
+    # 1. CreateTask whitespace title
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.CreateTask(
+            task_protos.CreateTaskRequest(
+                title='   \t  \n ',
+                authorId=author_id,
+                status=task_protos.TaskStatus.PLAN,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 2. CreateTask title > 255 chars
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.CreateTask(
+            task_protos.CreateTaskRequest(
+                title='t' * 256,
+                authorId=author_id,
+                status=task_protos.TaskStatus.PLAN,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 3. CreateTask description > 64 KB
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.CreateTask(
+            task_protos.CreateTaskRequest(
+                title='Valid Title',
+                description='d' * 65537,
+                authorId=author_id,
+                status=task_protos.TaskStatus.PLAN,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # Create valid task
+    create_resp = await task_client.CreateTask(
+        task_protos.CreateTaskRequest(
+            title='Valid Task For Validation Tests',
+            description='Initial description',
+            authorId=author_id,
+            checkerId=checker_id,
+            status=task_protos.TaskStatus.IN_REVIEW,
+        ),
+        metadata=[('authorization', f'Bearer {author_key}')],
+    )
+    task_id = create_resp.task.id
+
+    # 4. UpdateTask empty/whitespace title
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(id=task_id, title='   \n\t '),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 5. UpdateTask title > 255 chars
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(id=task_id, title='u' * 256),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 6. UpdateTask description > 64 KB
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.UpdateTask(
+            task_protos.UpdateTaskRequest(id=task_id, description='x' * 65537),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 7. AddComment whitespace content
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.AddComment(
+            task_protos.AddCommentRequest(
+                taskId=task_id,
+                content='   \t \n ',
+                type=task_protos.CommentType.COMMENT_GENERAL,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 8. AddComment content > 16 KB
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.AddComment(
+            task_protos.AddCommentRequest(
+                taskId=task_id,
+                content='c' * 16385,
+                type=task_protos.CommentType.COMMENT_GENERAL,
+            ),
+            metadata=[('authorization', f'Bearer {author_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 9. RejectTask whitespace reason
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.RejectTask(
+            task_protos.RejectTaskRequest(
+                taskId=task_id,
+                reason='   \t  ',
+            ),
+            metadata=[('authorization', f'Bearer {checker_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+    # 10. RejectTask reason > 16 KB
+    with pytest.raises(grpc.RpcError) as exc_info:
+        await task_client.RejectTask(
+            task_protos.RejectTaskRequest(
+                taskId=task_id,
+                reason='r' * 16385,
+            ),
+            metadata=[('authorization', f'Bearer {checker_key}')],
+        )
+    assert exc_info.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+
 
 

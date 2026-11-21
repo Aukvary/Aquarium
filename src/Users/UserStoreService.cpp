@@ -14,7 +14,9 @@
 #include <string_view>
 #include <tuple>
 #include <UserStoreService.pb.h>
+#include <userver/logging/log.hpp>
 #include <userver/storages/postgres/cluster.hpp>
+#include <userver/storages/postgres/exceptions.hpp>
 #include <userver/storages/postgres/io/row_types.hpp>
 #include <userver/storages/postgres/postgres.hpp>
 #include <userver/storages/postgres/query.hpp>
@@ -23,6 +25,31 @@
 #include <utility>
 
 namespace Aquarium::Users {
+bool IsBlank(std::string_view str) noexcept {
+    return std::all_of(str.begin(), str.end(), [](unsigned char c) {
+        return std::isspace(c);
+    });
+}
+
+void ValidateUserName(std::string_view name) {
+    if (IsBlank(name)) {
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::INVALID_ARGUMENT,
+                "User name cannot be empty"
+            )
+        );
+    }
+    if (name.length() > kMaxUserNameLength) {
+        throw userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::INVALID_ARGUMENT,
+                "User name cannot exceed 100 characters"
+            )
+        );
+    }
+}
+
 const UserDbInfo* FindUserById(
     const std::unordered_map<
         std::string,
@@ -40,6 +67,63 @@ const UserDbInfo* FindUserById(
         return nullptr;
     }
     return &it->second;
+}
+
+userver::ugrpc::server::ErrorWithStatus HandleDatabaseException(
+    const std::exception& ex,
+    std::string_view operation,
+    std::string_view contextInfo
+) {
+    if (const auto* e =
+            dynamic_cast<const userver::ugrpc::server::ErrorWithStatus*>(&ex)) {
+        return *e;
+    }
+
+    if (const auto* e =
+            dynamic_cast<const userver::storages::postgres::UniqueViolation*>(
+                &ex
+            )) {
+        LOG_WARNING() << operation << " unique constraint violation ("
+                      << contextInfo << "): " << e->what();
+        return userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::ALREADY_EXISTS,
+                "Resource already exists"
+            )
+        );
+    }
+
+    if (const auto* e = dynamic_cast<
+            const userver::storages::postgres::ForeignKeyViolation*>(&ex)) {
+        LOG_WARNING() << operation << " foreign key constraint violation ("
+                      << contextInfo << "): " << e->what();
+        return userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::FAILED_PRECONDITION,
+                "Resource is referenced by other entities"
+            )
+        );
+    }
+
+    if (const auto* e =
+            dynamic_cast<const userver::storages::postgres::ConnectionError*>(
+                &ex
+            )) {
+        LOG_ERROR() << operation << " database connection failed ("
+                    << contextInfo << "): " << e->what();
+        return userver::ugrpc::server::ErrorWithStatus(
+            grpc::Status(
+                grpc::StatusCode::UNAVAILABLE,
+                "Database service unavailable"
+            )
+        );
+    }
+
+    LOG_ERROR() << operation << " unexpected error (" << contextInfo
+                << "): " << ex.what();
+    return userver::ugrpc::server::ErrorWithStatus(
+        grpc::Status(grpc::StatusCode::INTERNAL, "Internal server error")
+    );
 }
 
 UserStoreService::UserStoreService(
@@ -61,16 +145,19 @@ UserStoreService::GetAllResult UserStoreService::GetAll(
         aquarium::api::GetAllUsersResponse response;
 
         for (const auto& [key, user_info] : *snapshot) {
+            if (!user_info.active) {
+                continue;
+            }
             auto* user = response.add_users();
             user->set_id(user_info.id);
             user->set_name(user_info.name);
         }
 
         return response;
+    } catch (const userver::ugrpc::server::ErrorWithStatus&) {
+        throw;
     } catch (const std::exception& ex) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(grpc::StatusCode::INTERNAL, ex.what())
-        );
+        throw HandleDatabaseException(ex, "GetAll users");
     }
 }
 
@@ -83,7 +170,7 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
 
         const auto* user_info = FindUserById(*snapshot, request.id());
 
-        if (!user_info) {
+        if (!user_info || !user_info->active) {
             throw userver::ugrpc::server::ErrorWithStatus(
                 grpc::Status(grpc::StatusCode::NOT_FOUND, "Undefined user")
             );
@@ -99,11 +186,8 @@ UserStoreService::GetUserResult UserStoreService::GetUser(
     } catch (const userver::ugrpc::server::ErrorWithStatus&) {
         throw;
     } catch (const std::exception& e) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(
-                grpc::StatusCode::INTERNAL,
-                std::string("Internal error: ") + e.what()
-            )
+        throw HandleDatabaseException(
+            e, "GetUser", "id=" + std::to_string(request.id())
         );
     }
 }
@@ -112,6 +196,8 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
     CallContext& /*ctx*/,
     AddUserRequest&& request
 ) {
+    ValidateUserName(request.name());
+
     static const userver::storages::postgres::Query kQuery{
         "INSERT INTO user_schema.tokens (name) VALUES ($1) RETURNING id, key"
     };
@@ -137,14 +223,10 @@ UserStoreService::AddUserResult UserStoreService::AddUser(
         user->set_key(std::move(key));
 
         return response;
+    } catch (const userver::ugrpc::server::ErrorWithStatus&) {
+        throw;
     } catch (const std::exception& ex) {
-        LOG_ERROR() << "AddUser error: " << ex.what();
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(
-                grpc::StatusCode::INTERNAL,
-                std::string("DB/Internal error: ") + ex.what()
-            )
-        );
+        throw HandleDatabaseException(ex, "AddUser", "name=" + request.name());
     }
 }
 
@@ -152,6 +234,8 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
     CallContext& ctx,
     UpdateUserRequest&& request
 ) {
+    ValidateUserName(request.newname());
+
     const auto* user = ctx.GetStorageContext().GetOptional(kAuthUser);
     if (!AccessControl::CanUpdateUser(user, request.id())) {
         throw userver::ugrpc::server::ErrorWithStatus(
@@ -163,8 +247,8 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
     }
 
     static const userver::storages::postgres::Query kQuery{
-        "UPDATE user_schema.tokens SET name = $2 WHERE id = $1 RETURNING id, "
-        "name, key"
+        "UPDATE user_schema.tokens SET name = $2, updated = CURRENT_TIMESTAMP "
+        "WHERE id = $1 RETURNING id, name, key"
     };
 
     try {
@@ -195,8 +279,8 @@ UserStoreService::UpdateUserResult UserStoreService::UpdateUser(
     } catch (const userver::ugrpc::server::ErrorWithStatus&) {
         throw;
     } catch (const std::exception& ex) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(grpc::StatusCode::INTERNAL, ex.what())
+        throw HandleDatabaseException(
+            ex, "UpdateUser", "id=" + std::to_string(request.id())
         );
     }
 }
@@ -216,7 +300,8 @@ UserStoreService::DeleteUserResult UserStoreService::DeleteUser(
     }
 
     static const userver::storages::postgres::Query kQuery{
-        "DELETE FROM user_schema.tokens WHERE id = $1"
+        "UPDATE user_schema.tokens SET active = FALSE, updated = CURRENT_TIMESTAMP "
+        "WHERE id = $1 AND active = TRUE"
     };
 
     try {
@@ -227,18 +312,18 @@ UserStoreService::DeleteUserResult UserStoreService::DeleteUser(
 
         bool success = result.RowsAffected() > 0;
         if (success) {
-            _authCache.InvalidateAsync(
-                userver::cache::UpdateType::kIncremental
-            );
+            _authCache.InvalidateAsync(userver::cache::UpdateType::kIncremental);
         }
 
         aquarium::api::DeleteUserResponse response;
         response.set_success(success);
 
         return response;
+    } catch (const userver::ugrpc::server::ErrorWithStatus&) {
+        throw;
     } catch (const std::exception& ex) {
-        throw userver::ugrpc::server::ErrorWithStatus(
-            grpc::Status(grpc::StatusCode::INTERNAL, ex.what())
+        throw HandleDatabaseException(
+            ex, "DeleteUser", "id=" + std::to_string(request.id())
         );
     }
 }

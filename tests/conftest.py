@@ -15,6 +15,11 @@ pytest_plugins = [
 ]
 
 @pytest.fixture(scope='session')
+def service_config_vars_path(service_source_dir):
+    """Path to test config variables with safe test defaults"""
+    return service_source_dir / 'configs' / 'config_vars.test.yaml'
+
+@pytest.fixture(scope='session')
 def pgsql_local(service_source_dir, pgsql_local_create):
     """Initializes PostgreSQL schemas from sql directory"""
     databases = discover.find_schemas(

@@ -42,10 +42,10 @@ bool CanUpdateTask(
     if (!user) {
         return false;
     }
-    if (user->admin || taskInfo.CheckerId == 0) {
+    if (user->admin || user->id == taskInfo.AuthorId) {
         return true;
     }
-    return (user->id == taskInfo.AuthorId || user->id == taskInfo.CheckerId);
+    return (taskInfo.CheckerId != 0 && user->id == taskInfo.CheckerId);
 }
 
 bool CanChangeChecker(
@@ -53,16 +53,13 @@ bool CanChangeChecker(
     const Tasks::TaskDbInfo& taskInfo,
     std::optional<std::int64_t> newCheckerId
 ) {
-    if (newCheckerId.value_or(0) == taskInfo.CheckerId) {
-        return true;
-    }
     if (!user) {
         return false;
     }
-    if (user->admin || taskInfo.CheckerId == 0) {
+    if (newCheckerId.value_or(0) == taskInfo.CheckerId) {
         return true;
     }
-    return user->id == taskInfo.AuthorId;
+    return user->admin || user->id == taskInfo.AuthorId;
 }
 
 bool CanUpdateTaskStatus(
@@ -73,12 +70,13 @@ bool CanUpdateTaskStatus(
     if (!user) {
         return false;
     }
-    if (user->admin || taskInfo.CheckerId == 0) {
+    if (user->admin) {
         return true;
     }
 
     const bool isAuthor = (user->id == taskInfo.AuthorId);
-    const bool isChecker = (user->id == taskInfo.CheckerId);
+    const bool isChecker =
+        (taskInfo.CheckerId != 0 && user->id == taskInfo.CheckerId);
     const bool isWorker = std::ranges::find(taskInfo.WorkerIds, user->id) !=
                           taskInfo.WorkerIds.end();
 
@@ -104,10 +102,10 @@ bool CanModifyTaskWorkers(
     if (!user) {
         return false;
     }
-    if (user->admin || taskInfo.CheckerId == 0) {
+    if (user->admin || user->id == taskInfo.AuthorId) {
         return true;
     }
-    return (user->id == taskInfo.AuthorId || user->id == taskInfo.CheckerId);
+    return (taskInfo.CheckerId != 0 && user->id == taskInfo.CheckerId);
 }
 
 bool CanDeleteTask(

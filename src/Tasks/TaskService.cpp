@@ -73,12 +73,48 @@ void FillProtoComment(aquarium::api::Comment *comment,
   *comment->mutable_createdat() = ToProtoTimestamp(commentInfo.CreatedAt);
 }
 
-void ValidateCreateTaskRequest(
-    const aquarium::api::CreateTaskRequest &request) {
-  if (request.title().empty()) {
+bool IsBlank(std::string_view str) noexcept {
+  return std::all_of(str.begin(), str.end(), [](unsigned char c) {
+    return std::isspace(c);
+  });
+}
+
+void ValidateTaskTitle(std::string_view title) {
+  if (IsBlank(title)) {
     throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT, "Task title cannot be empty"));
   }
+  if (title.length() > kMaxTaskTitleLength) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "Task title cannot exceed 255 characters"));
+  }
+}
+
+void ValidateTaskDescription(std::string_view description) {
+  if (description.length() > kMaxTaskDescriptionLength) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "Task description cannot exceed 65536 bytes"));
+  }
+}
+
+void ValidateCommentContent(std::string_view content) {
+  if (IsBlank(content)) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "Comment content cannot be empty"));
+  }
+  if (content.length() > kMaxCommentContentLength) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "Comment content cannot exceed 16384 bytes"));
+  }
+}
+
+void ValidateCreateTaskRequest(
+    const aquarium::api::CreateTaskRequest &request) {
+  ValidateTaskTitle(request.title());
+  ValidateTaskDescription(request.description());
 
   const std::int64_t authorId = request.authorid();
   if (authorId <= 0) {
@@ -125,10 +161,7 @@ void ValidateTaskStatus(aquarium::api::TaskStatus status) {
 void ValidateAddCommentRequest(
     const aquarium::api::AddCommentRequest &request) {
   ValidateTaskId(request.taskid());
-  if (request.content().empty()) {
-    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
-        grpc::StatusCode::INVALID_ARGUMENT, "Comment content cannot be empty"));
-  }
+  ValidateCommentContent(request.content());
   if (!aquarium::api::CommentType_IsValid(request.type())) {
     throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT, "Invalid comment type"));
@@ -138,9 +171,14 @@ void ValidateAddCommentRequest(
 void ValidateRejectTaskRequest(
     const aquarium::api::RejectTaskRequest &request) {
   ValidateTaskId(request.taskid());
-  if (request.reason().empty()) {
+  if (IsBlank(request.reason())) {
     throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT, "Rejection reason cannot be empty"));
+  }
+  if (request.reason().length() > kMaxCommentContentLength) {
+    throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "Rejection reason cannot exceed 16384 bytes"));
   }
 }
 
@@ -311,6 +349,26 @@ TaskStoreService::CreateTask(CallContext &ctx,
     std::optional<std::int64_t> checkerId;
     if (request.has_checkerid() && request.checkerid() != 0) {
       checkerId = request.checkerid();
+    }
+
+    auto cacheSnapshot = _authCache.Get();
+    if (checkerId.has_value() && *checkerId != 0) {
+      const auto *checkerUser =
+          Users::FindUserById(*cacheSnapshot, *checkerId);
+      if (checkerUser && !checkerUser->active) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "Cannot assign inactive user as checker"));
+      }
+    }
+
+    for (const auto id : workerIds) {
+      const auto *workerUser = Users::FindUserById(*cacheSnapshot, id);
+      if (workerUser && !workerUser->active) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "Cannot assign inactive user as worker"));
+      }
     }
 
     auto taskStatus = request.status();
@@ -518,10 +576,16 @@ TaskStoreService::UpdateTask(CallContext &ctx,
     const bool updateTitle = request.has_title();
     std::string newTitle =
         updateTitle ? std::move(*request.mutable_title()) : "";
+    if (updateTitle) {
+      ValidateTaskTitle(newTitle);
+    }
 
     const bool updateDescription = request.has_description();
     std::string newDescription =
         updateDescription ? std::move(*request.mutable_description()) : "";
+    if (updateDescription) {
+      ValidateTaskDescription(newDescription);
+    }
 
     const bool updateChecker = request.has_checkerid();
     std::optional<std::int64_t> newCheckerId;
@@ -533,6 +597,17 @@ TaskStoreService::UpdateTask(CallContext &ctx,
       throw userver::ugrpc::server::ErrorWithStatus(
           grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
                        "Only the author or an admin can change the checker"));
+    }
+
+    if (updateChecker && newCheckerId.has_value() && *newCheckerId != 0) {
+      auto cacheSnapshot = _authCache.Get();
+      const auto *checkerUser =
+          Users::FindUserById(*cacheSnapshot, *newCheckerId);
+      if (checkerUser && !checkerUser->active) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "Cannot assign inactive user as checker"));
+      }
     }
 
     const bool updateDueDate = request.has_duedate();
@@ -686,6 +761,14 @@ TaskStoreService::AssignWorker(CallContext &ctx,
       throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
           grpc::StatusCode::PERMISSION_DENIED,
           "Only the author, checker or an admin can assign workers"));
+    }
+
+    auto cacheSnapshot = _authCache.Get();
+    const auto *workerUser = Users::FindUserById(*cacheSnapshot, workerId);
+    if (workerUser && !workerUser->active) {
+      throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+          grpc::StatusCode::FAILED_PRECONDITION,
+          "Cannot assign inactive user as worker"));
     }
 
     transaction.Execute(kInsertTaskWorker, taskId, workerId);

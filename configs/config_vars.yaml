@@ -2,12 +2,11 @@ pg_connection#env: PG_CONNECTION
 pg_connection#fallback: 'postgresql://admin:password@127.0.0.1:5432/aquarium'
 
 internal-key#env: INTERNAL_KEY
-internal-key#fallback: 'zxc'
 
 invite-key#env: INVITE_KEY
-invite-key#fallback: 'secret_invite_key_value'
 
 user-store-client-endpoint#env: USER_STORE_CLIENT_ENDPOINT
 user-store-client-endpoint#fallback: '127.0.0.1:8081'
+
 
 

@@ -31,6 +31,7 @@
 #include <userver/storages/postgres/component.hpp>
 #include <userver/storages/postgres/io/array_types.hpp>
 #include <userver/storages/postgres/postgres_fwd.hpp>
+#include <userver/ugrpc/server/exceptions.hpp>
 #include <userver/ugrpc/server/service_component_base.hpp>
 #include <userver/yaml_config/merge_schemas.hpp>
 #include <vector>
@@ -52,6 +53,30 @@ const UserDbInfo* FindUserById(
         std::hash<std::string>,
         userver::crypto::algorithm::StringsEqualConstTimeComparator>& users,
     std::int64_t id
+);
+
+bool IsLoopbackPeer(std::string_view peer) noexcept;
+
+bool ConstantTimeCompare(
+    std::string_view str1,
+    std::string_view str2
+) noexcept;
+
+void ValidateStartupKeys(
+    std::string_view internalKey,
+    std::string_view inviteKey,
+    bool isTestMode
+);
+
+constexpr std::size_t kMaxUserNameLength = 100;
+
+bool IsBlank(std::string_view str) noexcept;
+void ValidateUserName(std::string_view name);
+
+userver::ugrpc::server::ErrorWithStatus HandleDatabaseException(
+    const std::exception& ex,
+    std::string_view operation,
+    std::string_view contextInfo = {}
 );
 
 inline const userver::utils::
@@ -140,13 +165,16 @@ public:
 class AuthenticationMiddleware final
     : public userver::ugrpc::server::MiddlewareBase {
 public:
-    using UserLookup = std::function<std::optional<UserDbInfo>(std::string_view)>;
+    using UserLookup =
+        std::function<std::optional<UserDbInfo>(std::string_view)>;
+    using PeerValidator = std::function<bool(std::string_view)>;
 
 private:
     const std::string _inviteKey;
     const AuthCache* _authCache{nullptr};
     const std::string _internalKey;
     UserLookup _userLookup{};
+    PeerValidator _peerValidator{IsLoopbackPeer};
 
 public:
     static inline const auto kDependency =
@@ -156,18 +184,22 @@ public:
     explicit AuthenticationMiddleware(
         const std::string_view inviteKey,
         const AuthCache& authCache,
-        const std::string_view internalKey
+        const std::string_view internalKey,
+        PeerValidator peerValidator = IsLoopbackPeer
     )
         : _inviteKey(inviteKey), _authCache(&authCache),
-          _internalKey(internalKey) {}
+          _internalKey(internalKey),
+          _peerValidator(std::move(peerValidator)) {}
 
     explicit AuthenticationMiddleware(
         const std::string_view inviteKey,
         UserLookup userLookup,
-        const std::string_view internalKey
+        const std::string_view internalKey,
+        PeerValidator peerValidator = IsLoopbackPeer
     )
         : _inviteKey(inviteKey), _authCache(nullptr),
-          _internalKey(internalKey), _userLookup(std::move(userLookup)) {}
+          _internalKey(internalKey), _userLookup(std::move(userLookup)),
+          _peerValidator(std::move(peerValidator)) {}
 
     void OnCallStart(
         userver::ugrpc::server::MiddlewareCallContext& ctx
@@ -208,6 +240,10 @@ properties:
     internal-key:
         type: string
         description: Secret internal key
+    test-mode:
+        type: boolean
+        description: Allow development/test fallback keys
+        defaultDescription: false
 )");
     }
 
@@ -215,14 +251,25 @@ properties:
         const userver::components::ComponentConfig& cfg,
         const userver::components::ComponentContext& ctx
     )
-        : Base{cfg, ctx}, _middleware{
-                              std::make_shared<const AuthenticationMiddleware>(
-                                  cfg["invite-key"].As<std::string>(),
-                                  ctx.FindComponent<AuthCache>(),
-                                  cfg["internal-key"].As<std::string>()
-                              )
+        : Base{cfg, ctx} {
+        const auto inviteKey = cfg["invite-key"].As<std::string>();
+        const auto internalKey = cfg["internal-key"].As<std::string>();
 
-                          } {}
+        bool isTestMode = cfg["test-mode"].As<bool>(false);
+        const char* envTestMode = std::getenv("AQUARIUM_TEST_MODE");
+        if (envTestMode && (std::string_view(envTestMode) == "1" ||
+                            std::string_view(envTestMode) == "true")) {
+            isTestMode = true;
+        }
+
+        ValidateStartupKeys(internalKey, inviteKey, isTestMode);
+
+        _middleware = std::make_shared<const AuthenticationMiddleware>(
+            inviteKey,
+            ctx.FindComponent<AuthCache>(),
+            internalKey
+        );
+    }
 
     [[nodiscard]]
     std::shared_ptr<const MiddlewareBase> CreateMiddleware(

@@ -29,6 +29,10 @@ public:
     tasks_[task.Id] = task;
   }
 
+  void SetUser(const Aquarium::Users::UserDbInfo &user) {
+    users_[user.id] = user;
+  }
+
   CreateTaskResult
   CreateTask(CallContext &context,
              aquarium::api::CreateTaskRequest &&request) override {
@@ -49,6 +53,24 @@ public:
     std::vector<std::int64_t> worker_ids(request.workerids().begin(),
                                          request.workerids().end());
     std::int64_t checker_id = request.has_checkerid() ? request.checkerid() : 0;
+
+    if (checker_id != 0) {
+      auto it = users_.find(checker_id);
+      if (it != users_.end() && !it->second.active) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "Cannot assign inactive user as checker"));
+      }
+    }
+
+    for (const auto id : worker_ids) {
+      auto it = users_.find(id);
+      if (it != users_.end() && !it->second.active) {
+        throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+            grpc::StatusCode::FAILED_PRECONDITION,
+            "Cannot assign inactive user as worker"));
+      }
+    }
 
     auto status = request.status();
     if (checker_id == 0) {
@@ -185,12 +207,25 @@ public:
           "Only the author, checker or an admin can update the task"));
     }
 
-    if (request.has_title())
+    if (request.has_title()) {
+      Aquarium::Tasks::ValidateTaskTitle(request.title());
       it->second.Title = request.title();
-    if (request.has_description())
+    }
+    if (request.has_description()) {
+      Aquarium::Tasks::ValidateTaskDescription(request.description());
       it->second.Description = request.description();
-    if (request.has_checkerid())
+    }
+    if (request.has_checkerid()) {
       it->second.CheckerId = request.checkerid();
+      if (request.checkerid() != 0) {
+        auto it_user = users_.find(request.checkerid());
+        if (it_user != users_.end() && !it_user->second.active) {
+          throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+              grpc::StatusCode::FAILED_PRECONDITION,
+              "Cannot assign inactive user as checker"));
+        }
+      }
+    }
     if (request.has_duedate()) {
       it->second.DueDate =
           Aquarium::Tasks::FromProtoTimestamp(request.duedate());
@@ -281,6 +316,13 @@ public:
       throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
           grpc::StatusCode::PERMISSION_DENIED,
           "Only the author, checker or an admin can assign workers"));
+    }
+
+    auto it_user = users_.find(request.workerid());
+    if (it_user != users_.end() && !it_user->second.active) {
+      throw userver::ugrpc::server::ErrorWithStatus(grpc::Status(
+          grpc::StatusCode::FAILED_PRECONDITION,
+          "Cannot assign inactive user as worker"));
     }
 
     auto &w = it->second.WorkerIds;
@@ -578,6 +620,7 @@ public:
 private:
   std::map<std::int64_t, Aquarium::Tasks::TaskDbInfo> tasks_;
   std::map<std::int64_t, Aquarium::Tasks::CommentDbInfo> comments_;
+  std::map<std::int64_t, Aquarium::Users::UserDbInfo> users_;
   userver::concurrent::AsyncEventChannel<const aquarium::api::TaskEvent &>
       event_channel_{"test_task_events"};
 };
@@ -602,12 +645,22 @@ protected:
                                             {}, true,           false};
     Aquarium::Users::UserDbInfo stranger_user{
         5, "stranger-token", "Dave", {}, true, false};
+    Aquarium::Users::UserDbInfo inactive_user{
+        6, "inactive-token", "InactiveUser", {}, false, false};
 
     token_to_user_[admin_user.key] = admin_user;
     token_to_user_[author_user.key] = author_user;
     token_to_user_[checker_user.key] = checker_user;
     token_to_user_[worker_user.key] = worker_user;
     token_to_user_[stranger_user.key] = stranger_user;
+    token_to_user_[inactive_user.key] = inactive_user;
+
+    service_.SetUser(admin_user);
+    service_.SetUser(author_user);
+    service_.SetUser(checker_user);
+    service_.SetUser(worker_user);
+    service_.SetUser(stranger_user);
+    service_.SetUser(inactive_user);
 
     // Seed initial task:
     // id: 1, author: 2 (Alice), checker: 3 (Bob), worker: {4} (Charlie),
@@ -922,9 +975,58 @@ UTEST(TaskPermissionTests, UpdatePermission) {
   taskNoChecker.WorkerIds = {40};
 
   EXPECT_TRUE(
-      Aquarium::Tasks::CheckTaskUpdatePermission(&stranger, taskNoChecker));
+      Aquarium::Tasks::CheckTaskUpdatePermission(&author, taskNoChecker));
   EXPECT_TRUE(
+      Aquarium::Tasks::CheckTaskUpdatePermission(&admin, taskNoChecker));
+  EXPECT_FALSE(
       Aquarium::Tasks::CheckTaskUpdatePermission(&worker, taskNoChecker));
+  EXPECT_FALSE(
+      Aquarium::Tasks::CheckTaskUpdatePermission(&stranger, taskNoChecker));
+}
+
+UTEST(TaskPermissionTests, ChangeCheckerPermission) {
+  Aquarium::Users::UserDbInfo author{10, "key", "Author", {}, true, false};
+  Aquarium::Users::UserDbInfo admin{1, "key", "Admin", {}, true, true};
+  Aquarium::Users::UserDbInfo checker{30, "key", "Checker", {}, true, false};
+  Aquarium::Users::UserDbInfo worker{40, "key", "Worker", {}, true, false};
+  Aquarium::Users::UserDbInfo stranger{20, "key", "Stranger", {}, true, false};
+
+  Aquarium::Tasks::TaskDbInfo taskNoChecker{};
+  taskNoChecker.AuthorId = 10;
+  taskNoChecker.CheckerId = 0;
+  taskNoChecker.WorkerIds = {40};
+
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&author, taskNoChecker, 30));
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&admin, taskNoChecker, 30));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(&worker, taskNoChecker, 30));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(&stranger, taskNoChecker, 30));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(nullptr, taskNoChecker, 30));
+
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&author, taskNoChecker, 0));
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&admin, taskNoChecker, 0));
+
+  Aquarium::Tasks::TaskDbInfo taskWithChecker{};
+  taskWithChecker.AuthorId = 10;
+  taskWithChecker.CheckerId = 30;
+  taskWithChecker.WorkerIds = {40};
+
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&author, taskWithChecker, 35));
+  EXPECT_TRUE(
+      Aquarium::AccessControl::CanChangeChecker(&admin, taskWithChecker, 35));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(&checker, taskWithChecker, 35));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(&worker, taskWithChecker, 35));
+  EXPECT_FALSE(
+      Aquarium::AccessControl::CanChangeChecker(&stranger, taskWithChecker, 35));
 }
 
 UTEST(TaskPermissionTests, StatusUpdatePermission) {
@@ -966,16 +1068,27 @@ UTEST(TaskPermissionTests, StatusUpdatePermission) {
   EXPECT_FALSE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
       &stranger, taskWithChecker, aquarium::api::TaskStatus::COMPLETE));
 
-  // Without checker: anyone can update status
+  // Without checker: author/admin can update status, worker can advance (e.g. ACTIVE),
+  // but stranger has no rights and worker cannot VERIFIED/ARCHIVE/IN_REVIEW
   Aquarium::Tasks::TaskDbInfo taskNoChecker{};
   taskNoChecker.AuthorId = 10;
   taskNoChecker.CheckerId = 0;
   taskNoChecker.WorkerIds = {40};
 
   EXPECT_TRUE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
-      &stranger, taskNoChecker, aquarium::api::TaskStatus::VERIFIED));
+      &author, taskNoChecker, aquarium::api::TaskStatus::VERIFIED));
+  EXPECT_TRUE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
+      &admin, taskNoChecker, aquarium::api::TaskStatus::VERIFIED));
   EXPECT_TRUE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
       &worker, taskNoChecker, aquarium::api::TaskStatus::ACTIVE));
+  EXPECT_FALSE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
+      &worker, taskNoChecker, aquarium::api::TaskStatus::VERIFIED));
+  EXPECT_FALSE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
+      &worker, taskNoChecker, aquarium::api::TaskStatus::IN_REVIEW));
+  EXPECT_FALSE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
+      &stranger, taskNoChecker, aquarium::api::TaskStatus::ACTIVE));
+  EXPECT_FALSE(Aquarium::Tasks::CheckTaskStatusUpdatePermission(
+      &stranger, taskNoChecker, aquarium::api::TaskStatus::VERIFIED));
 }
 
 UTEST(TaskPermissionTests, WorkerPermission) {
@@ -1002,15 +1115,19 @@ UTEST(TaskPermissionTests, WorkerPermission) {
   EXPECT_FALSE(
       Aquarium::Tasks::CheckTaskWorkerPermission(&stranger, taskWithChecker));
 
-  // Without checker: anyone can assign/remove workers
+  // Without checker: only author and admin can assign/remove workers
   Aquarium::Tasks::TaskDbInfo taskNoChecker{};
   taskNoChecker.AuthorId = 10;
   taskNoChecker.CheckerId = 0;
   taskNoChecker.WorkerIds = {40};
 
   EXPECT_TRUE(
-      Aquarium::Tasks::CheckTaskWorkerPermission(&worker, taskNoChecker));
+      Aquarium::Tasks::CheckTaskWorkerPermission(&author, taskNoChecker));
   EXPECT_TRUE(
+      Aquarium::Tasks::CheckTaskWorkerPermission(&admin, taskNoChecker));
+  EXPECT_FALSE(
+      Aquarium::Tasks::CheckTaskWorkerPermission(&worker, taskNoChecker));
+  EXPECT_FALSE(
       Aquarium::Tasks::CheckTaskWorkerPermission(&stranger, taskNoChecker));
 }
 
@@ -1511,8 +1628,28 @@ UTEST_F(TaskServiceGrpcFixture,
   update_req.set_status(aquarium::api::TaskStatus::COMPLETE);
 
   auto update_resp =
-      Client().UpdateTaskStatus(update_req, MakeAuthOptions("stranger-token"));
+      Client().UpdateTaskStatus(update_req, MakeAuthOptions("author-token"));
   EXPECT_EQ(update_resp.task().status(), aquarium::api::TaskStatus::VERIFIED);
+}
+
+UTEST_F(TaskServiceGrpcFixture,
+        UpdateTaskStatus_NoChecker_ByStranger_ThrowsPermissionDenied) {
+  aquarium::api::CreateTaskRequest create_req;
+  create_req.set_title("No Checker Task Stranger Denied");
+  create_req.set_authorid(2);
+  create_req.set_status(aquarium::api::TaskStatus::ACTIVE);
+
+  auto create_resp =
+      Client().CreateTask(create_req, MakeAuthOptions("author-token"));
+  const auto task_id = create_resp.task().id();
+
+  aquarium::api::UpdateTaskStatusRequest update_req;
+  update_req.set_id(task_id);
+  update_req.set_status(aquarium::api::TaskStatus::ACTIVE);
+
+  UEXPECT_THROW(
+      Client().UpdateTaskStatus(update_req, MakeAuthOptions("stranger-token")),
+      userver::ugrpc::client::PermissionDeniedError);
 }
 
 UTEST_F(TaskServiceGrpcFixture,
@@ -1531,7 +1668,7 @@ UTEST_F(TaskServiceGrpcFixture,
   update_req.set_status(aquarium::api::TaskStatus::IN_REVIEW);
 
   UEXPECT_THROW(
-      Client().UpdateTaskStatus(update_req, MakeAuthOptions("stranger-token")),
+      Client().UpdateTaskStatus(update_req, MakeAuthOptions("author-token")),
       userver::ugrpc::client::InvalidArgumentError);
 }
 
@@ -1544,7 +1681,8 @@ UTEST_F(TaskServiceGrpcFixture, AssignWorker_ByChecker_Succeeds) {
   EXPECT_THAT(resp.task().workerids(), testing::Contains(5));
 }
 
-UTEST_F(TaskServiceGrpcFixture, AssignWorker_NoChecker_ByStranger_Succeeds) {
+UTEST_F(TaskServiceGrpcFixture,
+        AssignWorker_NoChecker_ByStranger_ThrowsPermissionDenied) {
   aquarium::api::CreateTaskRequest create_req;
   create_req.set_title("Self Assign Task");
   create_req.set_authorid(2);
@@ -1558,8 +1696,45 @@ UTEST_F(TaskServiceGrpcFixture, AssignWorker_NoChecker_ByStranger_Succeeds) {
   req.set_id(task_id);
   req.set_workerid(5);
 
-  auto resp = Client().AssignWorker(req, MakeAuthOptions("stranger-token"));
+  UEXPECT_THROW(Client().AssignWorker(req, MakeAuthOptions("stranger-token")),
+                userver::ugrpc::client::PermissionDeniedError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, AssignWorker_NoChecker_ByAuthor_Succeeds) {
+  aquarium::api::CreateTaskRequest create_req;
+  create_req.set_title("Author Assign Task");
+  create_req.set_authorid(2);
+  create_req.set_status(aquarium::api::TaskStatus::PLAN);
+
+  auto create_resp =
+      Client().CreateTask(create_req, MakeAuthOptions("author-token"));
+  const auto task_id = create_resp.task().id();
+
+  aquarium::api::AssignWorkerRequest req;
+  req.set_id(task_id);
+  req.set_workerid(5);
+
+  auto resp = Client().AssignWorker(req, MakeAuthOptions("author-token"));
   EXPECT_THAT(resp.task().workerids(), testing::Contains(5));
+}
+
+UTEST_F(TaskServiceGrpcFixture,
+        UpdateTask_NoChecker_ByStranger_ThrowsPermissionDenied) {
+  aquarium::api::CreateTaskRequest create_req;
+  create_req.set_title("Update Task Without Checker");
+  create_req.set_authorid(2);
+  create_req.set_status(aquarium::api::TaskStatus::PLAN);
+
+  auto create_resp =
+      Client().CreateTask(create_req, MakeAuthOptions("author-token"));
+  const auto task_id = create_resp.task().id();
+
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(task_id);
+  req.set_title("Stranger Hacked Title");
+
+  UEXPECT_THROW(Client().UpdateTask(req, MakeAuthOptions("stranger-token")),
+                userver::ugrpc::client::PermissionDeniedError);
 }
 
 UTEST_F(TaskServiceGrpcFixture, UpdateTask_ByChecker_Succeeds) {
@@ -2009,4 +2184,164 @@ UTEST_F(TaskServiceGrpcFixture, SubscribeEvents_MultipleSubscribers_ReceiveBroad
   EXPECT_EQ(event2.type(), aquarium::api::TaskEvent::TASK_CREATED);
   EXPECT_EQ(event2.taskid(), resp.task().id());
   EXPECT_EQ(event2.task().title(), "Broadcast Task");
+}
+
+UTEST_F(TaskServiceGrpcFixture, CreateTask_InactiveChecker_ThrowsFailedPrecondition) {
+  aquarium::api::CreateTaskRequest req;
+  req.set_title("Task with Inactive Checker");
+  req.set_authorid(2);
+  req.set_status(aquarium::api::TaskStatus::PLAN);
+  req.set_checkerid(6); // User 6 is inactive
+
+  UEXPECT_THROW(
+      Client().CreateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::FailedPreconditionError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, CreateTask_InactiveWorker_ThrowsFailedPrecondition) {
+  aquarium::api::CreateTaskRequest req;
+  req.set_title("Task with Inactive Worker");
+  req.set_authorid(2);
+  req.set_status(aquarium::api::TaskStatus::PLAN);
+  req.add_workerids(6); // User 6 is inactive
+
+  UEXPECT_THROW(
+      Client().CreateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::FailedPreconditionError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, UpdateTask_InactiveChecker_ThrowsFailedPrecondition) {
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(1);
+  req.set_checkerid(6); // User 6 is inactive
+
+  UEXPECT_THROW(
+      Client().UpdateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::FailedPreconditionError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, AssignWorker_InactiveWorker_ThrowsFailedPrecondition) {
+  aquarium::api::AssignWorkerRequest req;
+  req.set_id(1);
+  req.set_workerid(6); // User 6 is inactive
+
+  UEXPECT_THROW(
+      Client().AssignWorker(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::FailedPreconditionError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, CreateTask_WhitespaceTitle_ThrowsInvalidArgument) {
+  aquarium::api::CreateTaskRequest req;
+  req.set_title("   \t  \n ");
+  req.set_authorid(2);
+  req.set_status(aquarium::api::TaskStatus::PLAN);
+
+  UEXPECT_THROW(
+      Client().CreateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, CreateTask_TitleExceeds255Chars_ThrowsInvalidArgument) {
+  aquarium::api::CreateTaskRequest req;
+  req.set_title(std::string(256, 't'));
+  req.set_authorid(2);
+  req.set_status(aquarium::api::TaskStatus::PLAN);
+
+  UEXPECT_THROW(
+      Client().CreateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, CreateTask_DescriptionExceeds64KB_ThrowsInvalidArgument) {
+  aquarium::api::CreateTaskRequest req;
+  req.set_title("Valid Title");
+  req.set_description(std::string(65537, 'd'));
+  req.set_authorid(2);
+  req.set_status(aquarium::api::TaskStatus::PLAN);
+
+  UEXPECT_THROW(
+      Client().CreateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, UpdateTask_EmptyTitle_ThrowsInvalidArgument) {
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(1);
+  req.set_title("");
+
+  UEXPECT_THROW(
+      Client().UpdateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, UpdateTask_WhitespaceTitle_ThrowsInvalidArgument) {
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(1);
+  req.set_title("   \t  ");
+
+  UEXPECT_THROW(
+      Client().UpdateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, UpdateTask_TitleExceeds255Chars_ThrowsInvalidArgument) {
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(1);
+  req.set_title(std::string(256, 'u'));
+
+  UEXPECT_THROW(
+      Client().UpdateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, UpdateTask_DescriptionExceeds64KB_ThrowsInvalidArgument) {
+  aquarium::api::UpdateTaskRequest req;
+  req.set_id(1);
+  req.set_description(std::string(65537, 'x'));
+
+  UEXPECT_THROW(
+      Client().UpdateTask(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, AddComment_WhitespaceContent_ThrowsInvalidArgument) {
+  aquarium::api::AddCommentRequest req;
+  req.set_taskid(1);
+  req.set_content("    \t  \n ");
+  req.set_type(aquarium::api::CommentType::COMMENT_GENERAL);
+
+  UEXPECT_THROW(
+      Client().AddComment(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, AddComment_ContentExceeds16KB_ThrowsInvalidArgument) {
+  aquarium::api::AddCommentRequest req;
+  req.set_taskid(1);
+  req.set_content(std::string(16385, 'c'));
+  req.set_type(aquarium::api::CommentType::COMMENT_GENERAL);
+
+  UEXPECT_THROW(
+      Client().AddComment(req, MakeAuthOptions("author-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, RejectTask_WhitespaceReason_ThrowsInvalidArgument) {
+  aquarium::api::RejectTaskRequest req;
+  req.set_taskid(1);
+  req.set_reason("   \t  ");
+
+  UEXPECT_THROW(
+      Client().RejectTask(req, MakeAuthOptions("checker-token")),
+      userver::ugrpc::client::InvalidArgumentError);
+}
+
+UTEST_F(TaskServiceGrpcFixture, RejectTask_ReasonExceeds16KB_ThrowsInvalidArgument) {
+  aquarium::api::RejectTaskRequest req;
+  req.set_taskid(1);
+  req.set_reason(std::string(16385, 'r'));
+
+  UEXPECT_THROW(
+      Client().RejectTask(req, MakeAuthOptions("checker-token")),
+      userver::ugrpc::client::InvalidArgumentError);
 }

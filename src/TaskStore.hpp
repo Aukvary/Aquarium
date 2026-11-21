@@ -117,6 +117,15 @@ void FillProtoTask(aquarium::api::Task *task, const TaskDbInfo &taskInfo);
 void FillProtoComment(aquarium::api::Comment *comment,
                       const CommentDbInfo &commentInfo);
 
+constexpr std::size_t kMaxTaskTitleLength = 255;
+constexpr std::size_t kMaxTaskDescriptionLength = 65536;
+constexpr std::size_t kMaxCommentContentLength = 16384;
+
+bool IsBlank(std::string_view str) noexcept;
+void ValidateTaskTitle(std::string_view title);
+void ValidateTaskDescription(std::string_view description);
+void ValidateCommentContent(std::string_view content);
+
 void ValidateCreateTaskRequest(const aquarium::api::CreateTaskRequest &request);
 void ValidateTaskId(std::int64_t id);
 void ValidateWorkerId(std::int64_t workerId);
